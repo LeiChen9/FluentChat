@@ -1,0 +1,266 @@
+/* ============================================================
+   FluentChat — 首页
+   Apple 语汇：SF 字体栈 / 发丝分隔线 / 毛玻璃底栏 / 弹簧曲线
+   ============================================================ */
+
+/* ── Design tokens ── */
+:root {
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
+          "PingFang SC", "Helvetica Neue", Arial, sans-serif;
+
+  --bg: #fbfbfd;
+  --ink: #1c1c1e;
+  --ink-2: rgba(60, 60, 67, 0.60);
+  --ink-3: rgba(60, 60, 67, 0.30);
+  --hairline: rgba(60, 60, 67, 0.16);
+
+  --accent: #5e5ce6;
+  --glow: rgba(94, 92, 230, 0.14);
+  --bar-bg: rgba(249, 249, 251, 0.72);
+
+  --spring: cubic-bezier(0.32, 0.72, 0, 1);
+  --soft: cubic-bezier(0.4, 0, 0.2, 1);
+  --bar-h: 49px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #000000;
+    --ink: #f5f5f7;
+    --ink-2: rgba(235, 235, 245, 0.60);
+    --ink-3: rgba(235, 235, 245, 0.30);
+    --hairline: rgba(235, 235, 245, 0.18);
+
+    --accent: #7d7aff;
+    --glow: rgba(125, 122, 255, 0.20);
+    --bar-bg: rgba(22, 22, 24, 0.72);
+  }
+}
+
+/* ── Reset ── */
+* { box-sizing: border-box; }
+
+html, body { height: 100%; }
+
+body {
+  margin: 0;
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  -webkit-text-size-adjust: 100%;
+  overscroll-behavior: none;
+}
+
+button { font: inherit; color: inherit; }
+
+/* ── Shell ── */
+.app {
+  height: 100vh;
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  isolation: isolate;
+}
+
+.stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* ── Views ── */
+.view {
+  position: absolute;
+  inset: 0;
+  padding-bottom: 8px;
+}
+
+.view[hidden] { display: none; }
+
+.view--center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 28px 28px;
+}
+
+.view.is-active {
+  animation: viewIn 420ms var(--spring) both;
+}
+
+@keyframes viewIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* ── Hero ── */
+.hero {
+  position: relative;
+  width: 100%;
+  max-width: 400px;
+  text-align: center;
+}
+
+/* 极淡光晕，让 NPC 从底色里浮起来 */
+.hero::before {
+  content: "";
+  position: absolute;
+  top: -104px;
+  left: 50%;
+  width: 360px;
+  height: 360px;
+  transform: translateX(-50%);
+  background: radial-gradient(circle, var(--glow) 0%, transparent 68%);
+  pointer-events: none;
+  z-index: -1;
+  animation: glowDrift 11s var(--soft) infinite;
+}
+
+@keyframes glowDrift {
+  0%, 100% { opacity: 1; transform: translateX(-50%) scale(1); }
+  50%      { opacity: .72; transform: translateX(-50%) scale(1.09); }
+}
+
+/* ── NPC ── */
+.npc-wrap {
+  margin-bottom: 40px;
+  animation: npcIn 900ms var(--spring) both;
+}
+
+.npc {
+  display: block;
+  width: 192px;
+  height: auto;
+  margin: 0 auto;
+  -webkit-touch-callout: none;
+  user-select: none;
+  /* 浅色底下：猫身是奶油白(220)，页面是 251，差 31 级。
+     靠投影把轮廓托出来，不然糊在背景里。 */
+  filter: drop-shadow(0 14px 30px rgba(30, 30, 50, 0.14));
+  animation: breathe 4.6s var(--soft) infinite;
+}
+
+@keyframes npcIn {
+  from { opacity: 0; transform: translateY(16px) scale(.95); }
+  to   { opacity: 1; transform: none; }
+}
+
+@keyframes breathe {
+  0%, 100% { transform: scale(1) translateY(0); }
+  50%      { transform: scale(1.025) translateY(-3px); }
+}
+
+/* 深色底下猫是奶油白，投影没意义，换成辉光 */
+@media (prefers-color-scheme: dark) {
+  .npc { filter: drop-shadow(0 0 38px rgba(125, 122, 255, 0.34)); }
+}
+
+/* ── Greeting ── */
+.greeting {
+  margin: 0;
+  font-size: 30px;
+  line-height: 1.36;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+  animation: textIn 760ms var(--spring) 170ms both;
+}
+
+@keyframes textIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: none; }
+}
+
+.greet__lead {
+  display: block;
+  font-weight: 400;
+  color: var(--ink-2);
+}
+
+.greet__hook {
+  display: block;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+/* ── Placeholder ── */
+.placeholder { text-align: center; }
+
+.placeholder__title {
+  margin: 0 0 6px;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--ink-2);
+}
+
+.placeholder__note {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 400;
+  color: var(--ink-3);
+}
+
+/* ── Tab bar ── */
+.tabbar {
+  flex: 0 0 auto;
+  display: flex;
+  padding-bottom: env(safe-area-inset-bottom);
+  background: var(--bar-bg);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  backdrop-filter: blur(20px) saturate(180%);
+  border-top: 0.5px solid var(--hairline);
+}
+
+.tab {
+  flex: 1 1 0;
+  min-height: var(--bar-h);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink-3);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+}
+
+.tab svg {
+  width: 25px;
+  height: 25px;
+  transition: transform 340ms var(--spring);
+}
+
+.tab span {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  transition: color 240ms var(--soft);
+}
+
+.tab[aria-selected="true"] { color: var(--accent); }
+.tab[aria-selected="true"] svg { animation: tabPop 420ms var(--spring); }
+.tab:active svg { transform: scale(.86); }
+
+@keyframes tabPop {
+  0%   { transform: scale(.84); }
+  60%  { transform: scale(1.08); }
+  100% { transform: scale(1); }
+}
+
+/* ── Reduced motion ── */
+@media (prefers-reduced-motion: reduce) {
+  .hero::before,
+  .npc,
+  .npc-wrap,
+  .greeting,
+  .view.is-active,
+  .tab[aria-selected="true"] svg {
+    animation: none !important;
+  }
+}

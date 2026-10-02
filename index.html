@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#FBFBFD" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<title>FluentChat</title>
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<div class="app">
+
+  <main class="stage">
+
+    <!-- ── Free Chat（首页本体） ── -->
+    <section class="view view--center is-active" id="view-home">
+      <div class="hero">
+        <div class="npc-wrap">
+          <img class="npc" src="assets/npc-cat.webp" width="510" height="527"
+               alt="你的英语陪练伙伴，一只猫">
+        </div>
+        <p class="greeting" id="greeting"></p>
+      </div>
+    </section>
+
+    <!-- ── Unit（接下来做） ── -->
+    <section class="view view--center" id="view-unit" hidden>
+      <div class="placeholder">
+        <p class="placeholder__title">Unit</p>
+        <p class="placeholder__note">接下来做</p>
+      </div>
+    </section>
+
+    <!-- ── Me（接下来做） ── -->
+    <section class="view view--center" id="view-me" hidden>
+      <div class="placeholder">
+        <p class="placeholder__title">学习进度</p>
+        <p class="placeholder__note">接下来做</p>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ── 底部栏 ── -->
+  <nav class="tabbar" role="tablist" aria-label="主导航">
+    <button class="tab" role="tab" data-view="home" aria-selected="true" aria-controls="view-home">
+      <svg viewBox="0 0 28 28" fill="none" aria-hidden="true">
+        <path d="M9 4.5h10a6 6 0 0 1 6 6v3.5a6 6 0 0 1-6 6h-3.6l-5.4 3.2V20H9a6 6 0 0 1-6-6v-3.5a6 6 0 0 1 6-6Z" fill="currentColor"/>
+      </svg>
+      <span>Free Chat</span>
+    </button>
+
+    <button class="tab" role="tab" data-view="unit" aria-selected="false" aria-controls="view-unit">
+      <svg viewBox="0 0 28 28" fill="none" aria-hidden="true">
+        <path d="M7.5 20.5h13" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" opacity=".38"/>
+        <circle cx="7.5" cy="20.5" r="3" fill="currentColor"/>
+        <circle cx="14" cy="14.5" r="2.6" fill="currentColor" opacity=".62"/>
+        <circle cx="20.5" cy="8.5" r="2.2" fill="currentColor" opacity=".32"/>
+      </svg>
+      <span>Unit</span>
+    </button>
+
+    <button class="tab" role="tab" data-view="me" aria-selected="false" aria-controls="view-me">
+      <svg viewBox="0 0 28 28" fill="none" aria-hidden="true">
+        <circle cx="14" cy="9.8" r="4.8" fill="currentColor"/>
+        <path d="M14 16.6c-4.7 0-8.5 3.2-8.5 7.1v.8h17v-.8c0-3.9-3.8-7.1-8.5-7.1Z" fill="currentColor"/>
+      </svg>
+      <span>Me</span>
+    </button>
+  </nav>
+
+</div>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
