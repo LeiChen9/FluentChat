@@ -216,3 +216,18 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Cloudflare Workers
+.wrangler/
+node_modules/
+.dev.vars
+
+# uv
+.venv-workers/
+python_modules/
+
+# 探针脚本签出来的临时 token，一次性凭证，别提交
+tools/.token_*
+tools/*.token
+
+# uv.lock 要提交：锁住依赖版本，别人部署才能得到一致结果

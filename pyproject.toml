@@ -1,0 +1,25 @@
+[project]
+name = "fluentchat"
+version = "0.1.0"
+description = "FluentChat 后端：给前端签发 Gemini Live 的一次性 token"
+requires-python = ">=3.13"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "workers-py",
+    "workers-runtime-sdk"
+]
+
+# 部署时把 prompts/ 一起打进 Worker，改 prompt 需要重新部署。
+# POC 阶段够用；以后想改 prompt 即时生效再换 KV。
+[tool.uv]
+package = false
+
+# 打包时只收 prompts/，别把 tools/ 下的本地探针脚本打进生产包
+[tool.uv.build-backend]
+module-root = ""
+
+[tool.wrangler]
+include = ["worker.py", "prompts/**"]
+exclude = ["tools/**", "assets/**", "css/**", "js/**", "*.md"]

@@ -1,59 +1,17 @@
-# 技术文档
+# 技术文档（豆包版 · 历史归档）
 
-当前阶段重点是 POC 而非工程化。用最小代价把对话体验跑通。
+> **本文档已归档，不是当前实现依据。**
+> 保留原因：Unit 划分、开场白、复盘规则和 system prompt 的方法论仍然有效，已被
+> [tech_doc.md](tech_doc.md) 继承。
+>
+> 与当前版本的两处关键差异：
+> 1. **通话模型不同**。豆包必须由用户发起语音通话，所以需要「prompt → 请拨通电话 → 接通 → 开场白」
+>    的握手。Gemini Live 由我们在列表页点一下即建连，AI 直接开口，不需要这个握手。
+> 2. **prompt 位置不同**。当时 prompt 由前端发送、可被用户看到和修改；现在 prompt 钉在
+>    Python Worker 签发的 ephemeral token 里，服务端强制生效，前端碰不到。
 
-主要场景：Gemini Live API
-主要手段：system prompt 钉在 ephemeral token 里
-
-方法论（Unit 划分、开场白、复盘规则）沿用 [tech_doc.doubao.md](tech_doc.doubao.md)。
-
-## 与豆包版的差异
-
-| | 豆包版 | 本版 |
-| --- | --- | --- |
-| 建连 | 用户在 App 内发起语音通话 | 列表页点 Unit 即建连 |
-| 开场 | 握手三步：prompt → 请拨通电话 → 接通 | **AI 直接开口**，无握手 |
-| prompt 位置 | 前端发送，用户可见可改 | **后端 Worker 签发 token 时钉死**，前端碰不到 |
-| 音频走向 | 平台 SDK | 浏览器直连 Gemini，不中转 |
-
-去掉握手是主动选择，不是简化。握手存在的原因是豆包侧必须由用户动作触发建连；
-我们点一下 Unit 已经是触发动作，再要求用户多说一句「接通」只是多一个来回，
-而且 AI 主动开口更自然。
-
-## 架构
-
-```
-浏览器  ──POST /token (unit id)──▶  Cloudflare Python Worker
-   │                              拼 base + unit prompt
-   │                                  POST /v1beta/auth_tokens
-   │◀───── 一次性 ephemeral token ─────┘
-   │
-   └──WSS 直连 Gemini Live（BidiGenerateContentConstrained）──▶
-          音频只在这条链路上流动，Worker 不碰
-```
-
-要点：
-
-- **API key 只在 Worker**，永远不下发到浏览器。
-- **prompt 在服务端强制生效**。已实测：问「今天天气怎么样」，模型只回 `钉住了`。
-- **音频不过 Cloudflare**。免费版 Worker 的 CPU 上限扛不住音频流，中转还会引入费用。
-- **模型 `gemini-3.8-live`**。已实测可拿到 `setupComplete`，虽然它不出现在
-  `/v1beta/models` 列表里（该列表不返回任何 live/native-audio 模型，别用它选型）。
-
-## 已验证的协议细节
-
-踩过的坑，改代码前先看这一节。
-
-| 事项 | 结论 |
-| --- | --- |
-| 客户端第一条消息 | 必须带 `setup`，否则服务端永远不回 `setupComplete` |
-| 服务端回包 | 用**二进制帧**发 JSON。`JSON.parse(Blob)` 会抛异常；Python 侧 `if type != TEXT: continue` 会把消息全丢掉 |
-| 会话中发文字 | 走 `realtimeInput.text` |
-| `clientContent` | 只收 `turns[]`，不收 `parts` |
-| `speechConfig` | 必须嵌在 `generationConfig` 内，放顶层报 `Unknown name` |
-| `turnComplete` | 服务端每轮结束都会发，客户端收到后**不要无脑重发**，会死循环 |
-| 会话续接 | 服务端主动发 `sessionResumptionUpdate`，断线可恢复，白捡的能力 |
-| 探针轮次 | 条件判断里没有终止分支会死循环，探针脚本每轮都要设上限 |
+历史场景：豆包 AI
+主要手段：system prompt（前端发送）
 
 ## Training Units
 
@@ -71,8 +29,7 @@
 | 06 | Free Time | 聊兴趣、电影、音乐、游戏等 |
 
 #### System Prompt
-
-```
+```markdown
 # 角色
 英语交流伙伴 + 隐形教练。首要真实交流，次要练后小步进步。不扮演角色，不设剧情。
 
@@ -130,18 +87,17 @@ P0 双方能懂、交流能续 > P1 礼貌常用表达 > P2 沟通效率 > P3 �
 - 不输出：文字稿、评分、语法长解、单词表、大总结。
 
 # 通话
-```
+收到本消息，只回一句：「我准备好了，请拨通电话。」
+接通后第一句必须是【话题】里的开场白，不加中文、不加铺垫。
 
-改动一处：删掉原来的「收到本消息，只回一句『我准备好了，请拨通电话。』」和「接通后第一句必须是开场白」。
-现在没有接通这一步，建连即开口，所以整个 `# 通话` 小节也一并去掉了 —— 开场白本身就在
-【话题】里，说明它该在什么时候说已经够明确，再写一遍是冗余。
-
-#### 话题
+# 话题
 （每 Unit 替换）
+
+```
 
 ##### Unit 01 — About Me
 
-```
+```markdown
 # 本次话题
 话题：聊你自己。
 开场白："Hi! Let's just talk. What's your name, and which province are you from?"
@@ -159,7 +115,7 @@ P0 双方能懂、交流能续 > P1 礼貌常用表达 > P2 沟通效率 > P3 �
 
 ##### Unit 02 — My Day
 
-```
+```markdown
 # 本次话题
 话题：聊今天。
 开场白："Hey, how was your day today? What did you do?"
@@ -177,20 +133,20 @@ P0 双方能懂、交流能续 > P1 礼貌常用表达 > P2 沟通效率 > P3 �
 结束：聊到 5 分钟左右，或用户说“复盘/结束”。然后按上面的复盘规则做对话式点评，全程中文。
 ```
 
-##### Unit 03 — Food & Coffee
+##### Unit 03 — Food
 
-```
+```markdown
 # 本次话题
 话题：聊吃的喝的。
-开场白："Let's talk about food and coffee. What do you usually have?"
+开场白："Let's talk about food. What's your favorite food?"
 
 可自然展开的方向（不是清单，顺着聊）：
 - 最喜欢的食物、饮料
-- 早上喝什么，一天喝几杯
 - 喜欢什么口味、不喜欢什么
 - 常自己做饭还是外面吃
 - 最近吃过什么好吃的
 - 有没有想试的新东西
+- 中餐和西餐更习惯哪个
 
 复盘关注：能否说清喜好；能否说出理由或频率；能否用一个礼貌点单或请求表达。
 结束：聊到 5 分钟左右，或用户说“复盘/结束”。然后按上面的复盘规则做对话式点评，全程中文。
@@ -198,7 +154,7 @@ P0 双方能懂、交流能续 > P1 礼貌常用表达 > P2 沟通效率 > P3 �
 
 ##### Unit 04 — Weekend
 
-```
+```markdown
 # 本次话题
 话题：聊周末。
 开场白："Do you have any plans for the weekend?"
@@ -217,7 +173,7 @@ P0 双方能懂、交流能续 > P1 礼貌常用表达 > P2 沟通效率 > P3 �
 
 ##### Unit 05 — My Home
 
-```
+```markdown
 # 本次话题
 话题：聊你住的地方。
 开场白："Tell me about where you live. Do you live in an apartment or a house?"
@@ -237,7 +193,7 @@ P0 双方能懂、交流能续 > P1 礼貌常用表达 > P2 沟通效率 > P3 �
 
 ##### Unit 06 — Free Time
 
-```
+```markdown
 # 本次话题
 话题：聊空闲时间喜欢做什么。
 开场白："What do you like to do in your free time?"
