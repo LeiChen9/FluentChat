@@ -55,6 +55,11 @@
 | 会话续接 | 服务端主动发 `sessionResumptionUpdate`，断线可恢复，白捡的能力 |
 | 探针轮次 | 条件判断里没有终止分支会死循环，探针脚本每轮都要设上限 |
 
+
+## 环境
+
+- Python 环境：conda 环境名 `echo`（本项目使用 uv 管理依赖，见 `pyproject.toml`）
+
 ## Training Units
 
 ### Survival

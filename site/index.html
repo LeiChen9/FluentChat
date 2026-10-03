@@ -27,11 +27,22 @@
       </div>
     </section>
 
-    <!-- ── Unit（接下来做） ── -->
-    <section class="view view--center" id="view-unit" hidden>
-      <div class="placeholder">
-        <p class="placeholder__title">Unit</p>
-        <p class="placeholder__note">接下来做</p>
+    <!-- ── Unit：场景列表 ── -->
+    <section class="view" id="view-unit" hidden>
+      <header class="page-head">
+        <h1 class="page-title">Unit</h1>
+        <p class="page-sub">点一个场景直接开聊</p>
+      </header>
+
+      <ul class="unit-list" id="unit-list"></ul>
+
+      <!-- 通话中：先只显示 AI 的转写文字，音频放到下一步 -->
+      <div class="talk" id="talk" hidden>
+        <div class="talk__card">
+          <p class="talk__label" id="talk-label">准备中</p>
+          <p class="talk__said" id="talk-said"></p>
+        </div>
+        <button class="talk__end" id="talk-end" type="button">结束</button>
       </div>
     </section>
 

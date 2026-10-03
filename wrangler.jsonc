@@ -5,6 +5,15 @@
   "compatibility_date": "2026-10-02",
   "compatibility_flags": ["python_workers"],
 
+  // 前端由 Worker 一起发，这样页面和 /token 同源，不需要 CORS，
+  // 而且 workers.dev 本身就是 HTTPS，iOS 才拿得到麦克风。
+  // 只放 site/：目录指向项目根会把 .env 一起传上去，API key 就公开了。
+  "assets": {
+    "directory": "./site",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application"
+  },
+
   // 让 .md 进包。它们会以 JS text 模块形式存在，Python 的 open() 读不到，
   // 所以 prompt 实际用的是 worker.py 里内联的那份（tools/gen_prompts.py 生成）。
   "rules": [
