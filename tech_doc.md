@@ -51,6 +51,11 @@
 | 会话中发文字 | 走 `realtimeInput.text` |
 | `clientContent` | 只收 `turns[]`，不收 `parts` |
 | `speechConfig` | 必须嵌在 `generationConfig` 内，放顶层报 `Unknown name` |
+| 音频格式 | 输出 **24000Hz** 单声道 PCM16，输入 **16000Hz** 单声道 PCM16。输入 mime 固定写 `audio/pcm;rate=16000` |
+| 音频怎么播 | Gemini 的音频是**裸 PCM16，没有文件头**，`decodeAudioData` 解不了（promise 直接 reject，还不报错）。必须手工转 Float32 → `AudioBuffer(1, n, 24000)` → 用 `playHead` 排队 `start(at)`，否则分片互相重叠会断音 |
+| 采集采样率 | 不要 `new AudioContext({sampleRate:24000})` 去迁就模型：设了之后 `ctx.sampleRate` 虽变 24000，但麦克风真实数据是 48000，发上去等于变速音频，模型听不懂。按 `ctx.sampleRate` 采、自己降到 16000 |
+| `AudioContext` 解锁 | 必须在用户手势（点击）里创建/resume，否则手机端一直是 `suspended`：没声音、`ScriptProcessor` 不回调 |
+| `ScriptProcessor` | 要接 `destination` 才会被驱动，但直连会把麦克风原样播出来（回声）。串一个 `gain = 0` 的节点 |
 | `turnComplete` | 服务端每轮结束都会发，客户端收到后**不要无脑重发**，会死循环 |
 | 会话续接 | 服务端主动发 `sessionResumptionUpdate`，断线可恢复，白捡的能力 |
 | 探针轮次 | 条件判断里没有终止分支会死循环，探针脚本每轮都要设上限 |
@@ -59,6 +64,10 @@
 ## 环境
 
 - Python 环境：conda 环境名 `echo`（本项目使用 uv 管理依赖，见 `pyproject.toml`）
+- 本地 secret：`wrangler dev` / `pywrangler dev` **不读 `.env`**，只读项目根目录的 `.dev.vars`。
+  需要一行 `GEMINI_API_KEY=xxx`（变量名要和 worker.py 里读的一致）。
+  部署上线时改用 `wrangler secret put GEMINI_API_KEY`。
+  改完 `.dev.vars` 要重启 dev server 才生效，可用 `curl localhost:8787/health` 确认 `has_key: true`。
 
 ## Training Units
 
