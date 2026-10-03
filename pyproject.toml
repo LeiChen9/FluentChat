@@ -15,11 +15,3 @@ dev = [
 # POC 阶段够用；以后想改 prompt 即时生效再换 KV。
 [tool.uv]
 package = false
-
-# 打包时只收 prompts/，别把 tools/ 下的本地探针脚本打进生产包
-[tool.uv.build-backend]
-module-root = ""
-
-[tool.wrangler]
-include = ["worker.py", "prompts/**"]
-exclude = ["tools/**", "assets/**", "css/**", "js/**", "*.md"]

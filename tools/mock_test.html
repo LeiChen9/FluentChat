@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FluentChat · mock 验证</title>
+<style>
+  :root { color-scheme: light; }
+  body {
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+    margin: 0; padding: 20px 16px 40px;
+    max-width: 560px; margin-inline: auto;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: #666; font-size: 13px; margin-bottom: 20px; }
+  .box {
+    border: 1px solid #e0e0e0; border-radius: 12px;
+    padding: 14px; margin-bottom: 14px; background: #fafafa;
+  }
+  .box h2 { font-size: 13px; color: #888; margin: 0 0 10px; font-weight: 500; }
+  #ai {
+    min-height: 60px; font-size: 17px; color: #111;
+    padding: 10px; background: #fff; border-radius: 8px; margin-bottom: 10px;
+  }
+  #me { color: #666; font-size: 15px; min-height: 22px; }
+  button {
+    font: inherit; padding: 11px 18px; border-radius: 8px;
+    border: 0; background: #1a73e8; color: #fff; margin: 0 8px 8px 0;
+  }
+  button:disabled { background: #bbb; }
+  input {
+    font: inherit; width: 100%; box-sizing: border-box;
+    padding: 11px; border: 1px solid #ddd; border-radius: 8px; margin-bottom: 10px;
+  }
+  #log {
+    font: 12px/1.55 ui-monospace, Menlo, monospace;
+    white-space: pre-wrap; color: #444; background: #f4f5f7;
+    padding: 12px; border-radius: 8px; max-height: 42vh; overflow-y: auto;
+  }
+  .ok { color: #188038; font-weight: 600; }
+  .bad { color: #c5221f; font-weight: 600; }
+</style>
+</head>
+<body>
+
+<h1>mock 验证：链路到底通不通</h1>
+<div class="sub">
+  后端 Worker 已部署。本页只做一件事：确认「输入 → AI 回应」这条路是否通。
+</div>
+
+<div class="box">
+  <h2>对话</h2>
+  <div id="ai">（AI 还没说话）</div>
+  <div id="me">（你还没说话）</div>
+  <audio id="play" autoplay></audio>
+</div>
+
+<div class="box">
+  <h2>输入方式</h2>
+  <button id="mic">说一句话（麦克风）</button>
+  <input id="typed" placeholder="或在这里打字，回车发送" autocomplete="off">
+  <button id="hello">发 mock 的 Hello</button>
+</div>
+
+<div class="box">
+  <h2>原始日志</h2>
+  <div id="log">等待连接…</div>
+</div>
+
+<script>
+// token 走同源：手机连的是这台 Mac 的局域网地址，
+// 不依赖手机能直连 workers.dev
+const API = '';
+const WS_BASE = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage'
+              + '.v1beta.GenerativeService.BidiGenerateContentConstrained';
+const UNIT = 'unit-01';   // 聊认识自己
+const MODEL = 'models/gemini-3.8-live';
+
+const $ = id => document.getElementById(id);
+let ws = null, audioCtx = null, playNode = null, sendTimer = null;
+
+function log(s) {
+  const el = $('log');
+  el.textContent += (el.textContent ? '\n' : '') + s;
+  el.scrollTop = el.scrollHeight;
+}
+function setAI(s) { $('ai').textContent = s; }
+
+// 服务端用二进制帧发 JSON，先解码再解析
+// 直接 JSON.parse(Blob) 会抛异常，这坑踩过
+function decode(ev) {
+  if (typeof ev.data === 'string') return ev.data;
+  const buf = new Uint8Array(ev.data);
+  const text = new TextDecoder('utf-8').decode(buf);
+  return text.trim()[0] === '{' ? text : null;   // null = 音频，不是 JSON
+}
+
+async function connect() {
+  if (ws && ws.readyState === WebSocket.OPEN) return ws;
+
+  $('log').textContent = '';
+  log('① 向 Worker 要 token…');
+  const r = await fetch(API + '/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ unit: UNIT }),
+  });
+  const j = await r.json();
+  if (j.error) { log('✗ 拿 token 失败：' + j.error); return null; }
+  log('   拿到 token');
+
+  log('② 连 Gemini…');
+  const sock = new WebSocket(WS_BASE + '?access_token=' + encodeURIComponent(j.token));
+  sock.binaryType = 'arraybuffer';
+  ws = sock;
+
+  sock.onopen = () => {
+    log('   ✓ 握手成功，发 setup');
+    sock.send(JSON.stringify({ setup: { model: MODEL } }));
+  };
+  sock.onerror = () => log('✗ 连接出错');
+  sock.onclose = e => log(`✗ 断开 code=${e.code} reason="${e.reason}"`);
+  sock.onmessage = ev => onMessage(ev);
+  return sock;
+}
+
+function onMessage(ev) {
+  const raw = decode(ev);
+  if (raw === null) return;                 // 音频帧，交给播放逻辑
+  let m; try { m = JSON.parse(raw); } catch { return; }
+
+  if (m.error) { log('✗ 服务端报错：' + JSON.stringify(m.error)); return; }
+  const keys = Object.keys(m).filter(k => k !== 'serverContent');
+  if (keys.length) log('   ← ' + keys.join(','));
+
+  const sc = m.serverContent || {};
+
+  // AI 说的话（转写文本）
+  const said = (sc.outputTranscription || {}).text;
+  if (said) { setAI(said); log('   AI 说：' + said); }
+
+  // 我说的话（转写文本）
+  const heard = (sc.inputTranscription || {}).text;
+  if (heard) { $('me').textContent = '我：' + heard; log('   我说：' + heard); }
+
+  // AI 的声音
+  const turn = sc.modelTurn && sc.modelTurn.parts;
+  if (turn) for (const p of turn) {
+    if (p.inlineData && p.inlineData.data) playAudio(p.inlineData.data, p.inlineData.mimeType);
+  }
+  if (sc.interrupted) log('   （用户打断）');
+  if (sc.turnComplete) log('   （本轮结束）');
+
+  if (m.sessionResumptionUpdate) log('   收到会话续接凭证');
+  if (m.goAway) log('   ⚠ 服务端提示快到会话上限：' + m.goAway.timeLeft);
+  if (m.usageMetadata) log('   用量已上报');
+}
+
+function playAudio(b64, mime) {
+  // 浏览器直接播 Gemini 的音频，Worker 全程没碰过这段数据
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+    const el = $('play');
+    playNode = audioCtx.createMediaStreamSource();
+    el.srcObject = audioCtx.createMediaStreamDestination().stream;
+  }
+  // Gemini 输出是 PCM16，浏览器的 AudioContext 接受对应格式
+  audioCtx.decodeAudioData(bytes.buffer.slice(0)).then(buf => {
+    const src = audioCtx.createBufferSource();
+    src.buffer = buf;
+    src.connect(playNode);
+    src.start();
+  }).catch(() => log('   （音频解码失败，只看文字）'));
+}
+
+// 发文字：走 realtimeInput.text
+// 文档说明 clientContent 只收 turns[]，且新版主要用于播种上下文
+function sendText(text) {
+  const sock = ws;
+  if (!sock || sock.readyState !== WebSocket.OPEN) { log('✗ 还没连上'); return; }
+  log('③ 我发：' + text);
+  sock.send(JSON.stringify({ realtimeInput: { text: text } }));
+  // VAD 开着，发完要显式收尾，否则模型不知道你说完了
+  clearTimeout(sendTimer);
+  sendTimer = setTimeout(() => {
+    sock.send(JSON.stringify({ realtimeInput: { activityEnd: {} } }));
+    log('   （已收尾，等 AI 回应）');
+  }, 1200);
+}
+
+$('hello').onclick = async () => {
+  const sock = await connect();
+  if (sock) sendText('Hello!');   // 这就是 mock 输入
+};
+
+$('typed').addEventListener('keydown', async e => {
+  if (e.key !== 'Enter' || !e.target.value.trim()) return;
+  const text = e.target.value.trim();
+  e.target.value = '';
+  const sock = await connect();
+  if (sock) sendText(text);
+});
+
+$('mic').onclick = async () => {
+  const sock = await connect();
+  if (!sock) return;
+  try {
+    const mic = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true }
+    });
+    const src = audioCtx ? audioCtx.createMediaStreamSource(mic)
+                         : new AudioContext().createMediaStreamSource(mic);
+    // 注意：这里只把麦克风接进播放路径，还没接上行到 Gemini。
+    // 真正的双向音频流是下一步的事，本页先验证文字这条路。
+    src.connect(audioCtx.destination);
+    log('麦克风已开（音频上行还没接，先用打字验证）');
+  } catch (e) {
+    log('✗ 麦克风打不开：' + e.message);
+  }
+};
+</script>
+</body>
+</html>

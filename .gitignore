@@ -231,3 +231,4 @@ tools/.token_*
 tools/*.token
 
 # uv.lock 要提交：锁住依赖版本，别人部署才能得到一致结果
+pylock.toml

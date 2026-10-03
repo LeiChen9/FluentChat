@@ -3,5 +3,11 @@
   "name": "fluentchat-api",
   "main": "worker.py",
   "compatibility_date": "2026-10-02",
-  "compatibility_flags": ["python_workers"]
+  "compatibility_flags": ["python_workers"],
+
+  // 让 .md 进包。它们会以 JS text 模块形式存在，Python 的 open() 读不到，
+  // 所以 prompt 实际用的是 worker.py 里内联的那份（tools/gen_prompts.py 生成）。
+  "rules": [
+    { "type": "Text", "globs": ["**/*.md"], "fallthrough": true }
+  ]
 }
