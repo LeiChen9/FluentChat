@@ -25,19 +25,68 @@ VOICE = "Kore"
 # 允许的 Unit 白名单。前端只能传这些 id，避免任意文件读取。
 UNITS = {f"unit-{i:02d}" for i in range(1, 7)}
 
+# 随 token 注入 system instruction 的历史：掐条数、掐单条长度，
+# 免得请求体膨胀（也防前端传一堆垃圾进来）。
+HIST_MAX_ITEMS = 30
+HIST_MAX_CHARS = 400
+
 
 def read_prompt(name: str) -> str:
     """取 prompt 内容。文件在打包后读不到，所以用内联的那份（见文件末尾）。"""
     return PROMPTS[name.removesuffix(".md")]
 
 
-def build_system_instruction(unit: str) -> str:
+def sanitize_history(raw) -> list[dict]:
+    """清洗前端带回来的聊天历史：只认 [{"who": me|ai, "text": str}, ...]。
+
+    历史会钉进 system instruction，所以条数和单条长度都要掐。
+    复盘卡片（kind=review）前端就不带，带了也会在这里被丢掉。
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list[dict] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        who = item.get("who")
+        text = item.get("text")
+        if who not in ("me", "ai") or not isinstance(text, str):
+            continue
+        text = text.strip()
+        if not text:
+            continue
+        out.append({"who": who, "text": text[:HIST_MAX_CHARS]})
+        if len(out) >= HIST_MAX_ITEMS:
+            break
+    return out
+
+
+def build_system_instruction(
+    unit: str, history: list[dict] | None = None
+) -> str:
     """把基础教学规则和本次 Unit 的话题拼成一份完整 prompt。
 
     顺序有讲究：先给通用对话规则，再给本次话题。
     后写的更贴近当前任务，模型更容易听话题部分的。
+    有历史时历史钉在最后 —— 同理，它要盖过 base.md「第一轮直接说开场白」。
     """
-    return f"{read_prompt('base.md')}\n\n{read_prompt(f'{unit}.md')}"
+    text = f"{read_prompt('base.md')}\n\n{read_prompt(f'{unit}.md')}"
+    if not history:
+        return text
+    speaker = {"me": "用户", "ai": "你"}
+    lines = "\n".join(
+        f"{speaker[h['who']]}：{h['text']}" for h in history
+    )
+    return (
+        f"{text}\n\n"
+        "# 此前的对话记录\n"
+        "这是你和该用户之前的聊天与通话记录（含语音通话的转写），"
+        "按时间从早到晚：\n"
+        f"{lines}\n\n"
+        "用户这次回来是接着聊。收到唤醒输入后不要重说开场白、"
+        "不要重新自我介绍，也不要再念【本次话题】里的开场白 —— "
+        "用一两句自然接上上次聊到哪儿（或接着上次的问题），然后继续。"
+    )
 
 
 def get_api_key(worker) -> str | None:
@@ -52,7 +101,9 @@ def get_api_key(worker) -> str | None:
         return None
 
 
-def build_token_payload(unit: str) -> dict:
+def build_token_payload(
+    unit: str, history: list[dict] | None = None
+) -> dict:
     """构造签发请求体。
 
     关键：不设 field_mask。按文档语义，整个 setup 都从 token 里读，
@@ -68,7 +119,9 @@ def build_token_payload(unit: str) -> dict:
         "bidiGenerateContentSetup": {
             "model": f"models/{MODEL}",
             "systemInstruction": {
-                "parts": [{"text": build_system_instruction(unit)}]
+                "parts": [
+                    {"text": build_system_instruction(unit, history)}
+                ]
             },
             "generationConfig": {
                 "responseModalities": ["AUDIO"],
@@ -112,6 +165,9 @@ class Default(WorkerEntrypoint):
                 {"error": f"unit 必须是 {sorted(UNITS)} 之一"}, status=400
             )
 
+        # 聊天历史（可选）：上次聊过的内容钉进 prompt，模型有记忆
+        history = sanitize_history(body.get("history"))
+
         api_key = get_api_key(self)
         if not api_key:
             return Response.json(
@@ -127,7 +183,7 @@ class Default(WorkerEntrypoint):
                     "x-goog-api-key": api_key,
                     "Content-Type": "application/json",
                 },
-                body=json.dumps(build_token_payload(unit)),
+                body=json.dumps(build_token_payload(unit, history)),
             )
         except Exception as e:
             return Response.json(

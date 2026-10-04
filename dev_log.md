@@ -158,3 +158,42 @@ npx wrangler deploy                  # 改了 site/ 必须部署，workers.dev �
 4. 「Unit 列表某些环境下点击无响应」——上一条日志留的，**还没排查**，可能已被 `connectSeq` 修掉。
 5. Free Chat tab 还是灰的占位，没设计。
 
+## 回复显示修复 + 去流式换 typing + 聊天历史持久化（2026-10-04）
+
+> 改动：`site/js/live.js`、`site/css/app.css`、`worker.py`、`tools/smoke.mjs`。
+
+### 需求
+1. 点开 Unit 的开场白只显示最后一段（如只剩 `province are you from?`），要能显示完整。
+2. 不要流式逐字：等待期间给「正在输入…」提示，后台慢慢算；文字聊天和通话都是这样。
+3. 持久化：同一个用户，聊天记录和语音通话的记忆每次都留存，下次进来不从头开始。
+
+### 根因（开场白截断）
+旧代码注释假设 `outputTranscription.text` 是「整轮到目前为止的完整文本」，同一条气泡
+**整轮覆盖写**（`upsert`）；实际服务端给的是**分片**，覆盖写就只剩最后一片。
+另外上一版修复只落在本地、**没部署**，线上一直是旧代码 —— 用户真机复现才暴露。
+教训：改了 `site/` 不 `wrangler deploy` + fetch 比对，等于没修。
+
+### 改法
+| # | 问题 | 修法 |
+| --- | --- | --- |
+| 1 | 只显示最后一片 | `mergeChunk()` 按内容判断服务端语义：新包含旧文→整轮累计（覆盖）；旧文含新包→重复（丢）；否则→增量（拼）。分片只攒进 `pendingAi`/`pendingMe`，`turnComplete` 才一次性 `flushPending()` 落成整条气泡 |
+| 2 | 流式逐字 | 等待期间显示 WhatsApp 式三点气泡 `.msg--typing`（CSS `typingDot` 动画）+ 顶栏「对方正在输入…」，发送/唤醒后立即出现。复盘卡片同样攒 `reviewBuf`，收尾才一次性贴正文，中途保持「正在整理…」占位 |
+| 3 | 无持久化 | 每条消息落定即写 `localStorage`（`fluentchat:hist:v1:<unit>`，每 Unit 上限 120 条），重开同一 Unit 渲染全部气泡 + 复盘卡片；`/token` 请求带上 history（最近 30 条 × 400 字，**复盘卡片不算对话不带**），`worker.py` 的 `sanitize_history()` 清洗后把历史钉进 system instruction **末尾**（后写的盖过 base.md「第一轮直接说开场白」），指示模型接着上次聊、不重说开场白 |
+
+- 通话页 `callSaid` **保留实时字幕**（跟着语音走才有用）；聊天区的落泡节奏不受影响。
+- 通话中的转写（`inputTranscription`/`outputTranscription`）同样攒到 `turnComplete` 落泡 —— 所以语音通话的内容天然进历史，通话记忆一并保住。
+- 断线（`onClose`）、打断（`interrupted`）、挂断（`hangUp`）都先 `flushPending()`，攒着的话不丢。
+- `smoke.mjs` 桩升级：`remove()` 真的从父节点摘节点（typing 靠它消失）、补 `localStorage` 内存桩、记录 `/token` 请求体断言 history。
+
+### 验证
+- `node --check site/js/*.js tools/smoke.mjs`；`python -m py_compile worker.py`；CSS 花括号 124 对配平。
+- **`node tools/smoke.mjs` → SMOKE PASS**（26 步：分片期间只出 typing → 整轮一次出完整开场白 → 通话转写攒轮落泡 → 复盘占位不流式 → 返回 → 重进恢复 6 个历史节点、`/token` 带 5 条 history）。
+- worker 历史逻辑本地单测（清洗/截断/历史位于 prompt 末尾）通过。
+- 用 `.dev.vars` 真 key 把 `build_token_payload(unit, history)` 实际 payload 打给 Gemini → **200 签发成功**（本机直连 `generativelanguage.googleapis.com` 超时，走 `127.0.0.1:8118` 代理验证；`wrangler dev` 的 outbound fetch 过不了代理，本地 dev 起不来，别在这台机器上等它）。
+- 部署 Version `a1db9a5e-cc9a-4dd9-9387-51f6da3894cf`；fetch 远端 `/js/live.js`、`/css/app.css` 与本地 md5 一致，`/health` 正常。
+
+### 待测试
+- 真机回归：开场白完整度、typing 动画、退出重进恢复历史、通话字幕、挂断复盘。
+- 历史只存在**本机浏览器** localStorage，换设备/清缓存即全新；多设备不同步。
+- 历史随每次签 token 进 system instruction，单次上限约 30×400 字（约 8KB payload，已实测可签发）；聊得极久后要留意是否需要摘要压缩。
+

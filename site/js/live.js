@@ -46,8 +46,19 @@ const REVIEW_REQ = [
   "也不要输出文字稿、评分、语法讲解或单词表。",
 ].join("");
 
-// 转写是整轮覆盖上来的（服务端每次给的是这一轮到目前为止的完整文本），
-// 所以同一条气泡直接改文本，不能拼接。
+// 转写分片的处理方式（实测修正）：
+// 服务端给的不一定是「整轮完整文本」，旧代码按整轮覆盖写，
+// 结果开场白只显示最后一片。现在分片先用 mergeChunk 合并攒着，
+// 整轮结束（turnComplete）才一次性落成气泡 —— 不做流式逐字，
+// 等待期间显示「正在输入…」气泡。
+
+// 聊天历史持久化：每个 Unit 一份，存在浏览器 localStorage。
+// 下次打开同一 Unit 把气泡渲染回来；签 token 时把记录一并交给后端，
+// 钉进 system instruction —— 模型记得之前聊过，不再从开场白重来。
+const HIST_KEY = "fluentchat:hist:v1:";
+const HIST_MAX = 120;    // 本地每个 Unit 最多留多少条
+const HIST_FOR_AI = 30;  // 交给模型最多多少条（每条再截 HIST_CHARS 字）
+const HIST_CHARS = 400;
 
 export function initChat({ show, back }) {
   // ── DOM ──
@@ -90,9 +101,11 @@ export function initChat({ show, back }) {
   let playHead = 0;
   let liveSources = [];
 
-  // 正在写的气泡
-  let aiBubble = null;
-  let meBubble = null;
+  // 本轮攒着还没落盘的话（不做流式，turnComplete 时一次性落成气泡）
+  let pendingAi = "";
+  let pendingMe = "";
+  let typingEl = null;   // 「正在输入…」气泡
+  let hist = [];         // 当前 Unit 的历史（内存 + localStorage 双写）
 
   // 挂断后的复盘
   let reviewCard = null;
@@ -151,11 +164,75 @@ export function initChat({ show, back }) {
     return node;
   }
 
-  function upsert(node, who, text) {
-    const live = node || addBubble(who, "");
-    live.textContent = text;
-    scrollDown();
-    return live;
+  // ── typing 提示 ──
+  // AI 的回复不逐字流式出字：分片先攒着，等整轮结束一次性落气泡，
+  // 这期间摆一个「正在输入…」气泡，和微信/WhatsApp 一样。
+  function showTyping() {
+    if (typingEl) return;
+    typingEl = document.createElement("p");
+    typingEl.className = "msg msg--ai msg--typing";
+    typingEl.innerHTML = "<i></i><i></i><i></i>";
+    body.append(typingEl);
+    scrollDown(true);
+    setChatState("对方正在输入…");
+  }
+
+  function hideTyping() {
+    if (!typingEl) return;
+    typingEl.remove();
+    typingEl = null;
+  }
+
+  // 转写分片合并。开场白「只显示最后一段」的根因：服务端给的是增量分片，
+  // 旧代码整轮覆盖写，只剩最后一片。这里按内容猜服务端语义：
+  // 新包含旧文 → 整轮累计（覆盖）；旧文含新包 → 重复（丢）；否则 → 增量（拼）。
+  function mergeChunk(buf, line) {
+    if (!buf) return line;
+    if (line.includes(buf)) return line;
+    if (buf.includes(line)) return buf;
+    return buf + line;
+  }
+
+  // 本轮攒下的话一次性落成气泡，并写进本地历史。
+  function flushPending() {
+    hideTyping();
+    if (pendingMe) {
+      addBubble("me", pendingMe);
+      pushHist({ who: "me", text: pendingMe });
+      pendingMe = "";
+    }
+    if (pendingAi) {
+      addBubble("ai", pendingAi);
+      pushHist({ who: "ai", text: pendingAi });
+      pendingAi = "";
+    }
+  }
+
+  // ── 历史（本地留存，下次打开还在） ──
+  function loadHist(id) {
+    try {
+      const arr = JSON.parse(localStorage.getItem(HIST_KEY + id) || "[]");
+      return Array.isArray(arr) ? arr.filter((h) => h && typeof h.text === "string") : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function pushHist(item) {
+    if (!unit) return;
+    hist.push(item);
+    try {
+      localStorage.setItem(HIST_KEY + unit.id, JSON.stringify(hist.slice(-HIST_MAX)));
+    } catch {}
+  }
+
+  // 交给后端钉进 system instruction 的那份：只要真正的对话。
+  // 复盘卡片是模型产出的总结，不算对话轮次，别混进去。
+  function packHist() {
+    return hist
+      .filter((h) => h.who === "me" || h.who === "ai")
+      .slice(-HIST_FOR_AI)
+      .map((h) => ({ who: h.who, text: String(h.text).slice(0, HIST_CHARS) }));
   }
 
   // 出错时显示在界面上，别只 console.warn（手机上看不到 console）
@@ -363,12 +440,21 @@ export function initChat({ show, back }) {
     setChatState("连接中…");
     setReady(false);
 
+    // 把上次的聊天记录摆回来（含复盘卡片），别每次都是白纸一张
+    hist = loadHist(u.id);
+    for (const item of hist) {
+      if (item.kind === "review") addReviewCard(item.text, false);
+      else addBubble(item.who === "me" ? "me" : "ai", item.text);
+    }
+
     show?.();
+    scrollDown(true);
     connect();
   }
 
   // 离开对话页就整个拆掉：连接、麦克风、正在写的气泡、没跑完的复盘，全部清干净。
-  // 所以对话历史不跨会话保留——重开会话模型也没了记忆，留着旧消息反而骗人。
+  // 历史另存在 localStorage 里，不跟着这里走 —— 下次打开同一 Unit 会重新渲染，
+  // 而且签 token 时会带上，模型那边也有记忆。
   function teardown() {
     connectSeq++; // 让还在等 token 的 connect 作废
     if (reviewIdle) { clearTimeout(reviewIdle); reviewIdle = null; }
@@ -382,8 +468,10 @@ export function initChat({ show, back }) {
 
     unit = null;
     mode = "text";
-    aiBubble = null;
-    meBubble = null;
+    pendingAi = "";
+    pendingMe = "";
+    hideTyping();
+    hist = [];
     reviewCard = null;
     reviewText = null;
     reviewBuf = "";
@@ -410,7 +498,9 @@ export function initChat({ show, back }) {
       const res = await fetch("/token", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ unit: u.id }),
+        // history：把之前聊过的交给后端钉进 system instruction，
+        // 模型接着上次聊，不再重头开场。
+        body: JSON.stringify({ unit: u.id, history: packHist() }),
       });
       const data = await res.json();
       if (!res.ok || !data.token) throw new Error(data.error || `HTTP ${res.status}`);
@@ -447,6 +537,7 @@ export function initChat({ show, back }) {
     if (unit !== u) return;
     stopMic();
     stopPlayback();
+    flushPending(); // 断线时攒着的话先落下来，别丢
     ws = null;
     wakeSent = false;
     setReady(false);
@@ -468,43 +559,43 @@ export function initChat({ show, back }) {
     let d;
     try { d = JSON.parse(raw); } catch { return; }
 
-    if (d.error) { setChatState(`出错：${d.error.message || d.error}`); return; }
+    if (d.error) { hideTyping(); setChatState(`出错：${d.error.message || d.error}`); return; }
 
     // setupComplete 后发一个空格唤醒 AI。Gemini 不会自己开口。
     // 醒来它先说本次话题的开场白，那就是聊天里的第一条消息。
+    // 这期间不流式出字，先摆 typing，等整轮结束再落气泡。
     if (d.setupComplete && !wakeSent) {
       wakeSent = true;
       setReady(true);
-      setChatState("在线");
       send({ realtimeInput: { text: " " } });
+      showTyping();
       return;
     }
 
     const sc = d.serverContent || {};
 
-    // 你插话时模型会被打断，已排队的音频要立刻停，不然它会继续念下去
-    if (sc.interrupted) { stopPlayback(); aiBubble = null; }
+    // 你插话时模型会被打断，已排队的音频要立刻停，不然它会继续念下去。
+    // 已经转写出来的部分也别丢，先落成气泡。
+    if (sc.interrupted) { stopPlayback(); flushPending(); }
 
     // 你说的话。只有 token 开了 inputAudioTranscription 才会有（worker 里开了）。
+    // 通话里的转写同样攒到 turnComplete 再落气泡。
     const mine = sc.inputTranscription?.text;
-    if (mine) meBubble = upsert(meBubble, "me", mine);
+    if (mine) pendingMe = mergeChunk(pendingMe, mine);
 
     const line = sc.outputTranscription?.text;
     if (line) {
       if (reviewCard) {
-        // 复盘这一轮：整段覆盖写进卡片，不走普通气泡
-        reviewBuf = line;
-        reviewCard.classList.remove("is-loading");
-        reviewText.textContent = reviewBuf;
+        // 复盘这一轮：攒在卡片里，不流式写、不走普通气泡
+        reviewBuf = mergeChunk(reviewBuf, line);
         armReviewIdle(3500);
-        scrollDown();
       } else {
-        if (!aiBubble) {
-          setChatState("在线"); // 上面刚打的「对方正在输入…」该撤了
-          if (meBubble) meBubble = null; // AI 开口，你那句就算说完了
+        pendingAi = mergeChunk(pendingAi, line);
+        if (mode === "call") {
+          callSaid.textContent = pendingAi; // 通话页保留实时字幕（跟着语音走）
+        } else {
+          showTyping();
         }
-        aiBubble = upsert(aiBubble, "ai", line);
-        if (mode === "call") callSaid.textContent = line;
       }
     }
 
@@ -520,14 +611,14 @@ export function initChat({ show, back }) {
     }
 
     if (sc.turnComplete) {
+      // 本轮攒的话（包括挂断后迟到的尾巴）一次性落成气泡
+      flushPending();
       if (reviewCard) {
         // 挂断瞬间上一轮可能还有一条 turnComplete 迟到，别让它把
         // 刚起头的复盘掐了：等 700ms，而且至少要攒到字。
         if (reviewBuf.trim() && Date.now() - reviewArmedAt > 700) finishReview();
         return;
       }
-      aiBubble = null;
-      meBubble = null;
       setChatState("在线");
       if (mode === "call") setCallState("通话中");
     }
@@ -551,8 +642,7 @@ export function initChat({ show, back }) {
     callBox.hidden = true;
     callSaid.textContent = "";
     mode = "text";
-    aiBubble = null;
-    meBubble = null;
+    flushPending(); // 通话里说到一半的先落下来，别丢
     if (!ready) return;
     setChatState("在线");
     // 缓 700ms：挂断瞬间可能还有一轮在飞，别把它的尾巴当成复盘内容
@@ -564,20 +654,11 @@ export function initChat({ show, back }) {
   // 复盘走的是同一条 Live 连接——模型手里本来就有整段对话，
   // 不用另开接口，也不用把 transcript 传回去。
   function requestReview() {
-    const card = document.createElement("div");
-    card.className = "review is-loading";
-    const label = document.createElement("p");
-    label.className = "review__label";
-    label.textContent = "复盘建议";
-    const text = document.createElement("p");
-    text.className = "review__text";
-    text.textContent = "正在整理刚才的对话…";
-    card.append(label, text);
-    body.append(card);
-    scrollDown(true);
+    flushPending(); // 挂断后迟到的对话先落卡，再摆复盘卡片（保持先后顺序）
+    const { card, textEl } = addReviewCard("正在整理刚才的对话…", true);
 
     reviewCard = card;
-    reviewText = text;
+    reviewText = textEl;
     reviewBuf = "";
     reviewArmedAt = Date.now();
 
@@ -603,12 +684,28 @@ export function initChat({ show, back }) {
     reviewCard.classList.remove("is-loading");
     const text = reviewBuf.trim();
     reviewText.textContent = text || "这次没拿到复盘，挂断一次再试试。";
+    if (text) pushHist({ kind: "review", text });
     reviewCard = null;
     reviewText = null;
     reviewBuf = "";
-    aiBubble = null;
-    meBubble = null;
+    hideTyping();
     scrollDown(true);
+  }
+
+  // 复盘卡片：loading 态挂「正在整理…」，收尾时一次性贴正文（不流式）。
+  function addReviewCard(text, loading) {
+    const card = document.createElement("div");
+    card.className = loading ? "review is-loading" : "review";
+    const label = document.createElement("p");
+    label.className = "review__label";
+    label.textContent = "复盘建议";
+    const t = document.createElement("p");
+    t.className = "review__text";
+    t.textContent = text;
+    card.append(label, t);
+    body.append(card);
+    scrollDown(true);
+    return { card, textEl: t };
   }
 
   // ── 交互 ──
@@ -627,8 +724,9 @@ export function initChat({ show, back }) {
     input.value = "";
     sendBtn.disabled = true;
     addBubble("me", text);
+    pushHist({ who: "me", text });
     send({ realtimeInput: { text } });
-    setChatState("对方正在输入…");
+    showTyping(); // 后台慢慢算，界面上先给个「正在输入…」
   });
 
   return { close: teardown };
