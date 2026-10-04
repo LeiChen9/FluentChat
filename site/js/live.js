@@ -41,9 +41,12 @@ const REVIEW_REQ = [
   "请直接用中文写成一整段交给我：不要分几轮，不要问我问题，也不要等我回应。",
   "这样组织：先用一两句话说清楚我这次做得好的一两个具体的地方；",
   "然后给 2-3 个我需要改的点，每个点一句中文说明，后面配一个我应该怎么说的简短英文例句；",
-  "最后用一句中文鼓励收尾。",
+  "再说一句中文鼓励；",
+  "最后附一份「表达清单」：把这次我说过的每一句（含语音转写）逐条整理，",
+  "每条写「我说 X → 地道说法 Y」，中文点一下意思、英文给整句；已经地道的写这句已经很地道，",
+  "没转写到的明说哪句没听清，不硬凑；只整理我说的话，不要贴你自己的话。",
   "现在就开始正文，不要寒暄，不要说「我们来复盘」这类开场，",
-  "也不要输出文字稿、评分、语法讲解或单词表。",
+  "也不要做评分或语法长讲解。",
 ].join("");
 
 // 转写分片的处理方式（实测修正）：
@@ -73,6 +76,7 @@ export function initChat({ show, back }) {
   const sendBtn = document.getElementById("chat-send");
   const backBtn = document.getElementById("chat-back");
   const callBtn = document.getElementById("chat-call");
+  const resetBtn = document.getElementById("chat-reset");
 
   const callBox = document.getElementById("call");
   const callAv = document.getElementById("call-av");
@@ -708,10 +712,21 @@ export function initChat({ show, back }) {
     return { card, textEl: t };
   }
 
+  // Reset：清掉这个 Unit 的本地历史并拆线重连 —— 界面和模型一起回到白纸。
+  function resetChat() {
+    const u = unit;
+    if (!u) return;
+    if (!confirm("清空这段对话记录？清掉后无法恢复。")) return;
+    teardown();
+    try { localStorage.removeItem(HIST_KEY + u.id); } catch {}
+    openChat(u); // unit 已被 teardown 置空，不会命中「同一个还开着」的早退分支
+  }
+
   // ── 交互 ──
   backBtn.addEventListener("click", () => back?.());
   callBtn.addEventListener("click", startCall);
   callEnd.addEventListener("click", hangUp);
+  resetBtn.addEventListener("click", resetChat);
 
   input.addEventListener("input", () => {
     sendBtn.disabled = !ready || !input.value.trim();

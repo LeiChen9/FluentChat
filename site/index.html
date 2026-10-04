@@ -57,6 +57,13 @@
           <b id="chat-name">Unit</b>
           <i id="chat-state">连接中…</i>
         </span>
+
+        <!-- 清空本次对话：本地历史 + 拆线重连（模型记忆一起清） -->
+        <button class="chat-reset" id="chat-reset" type="button" aria-label="清空对话记录">
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M4.5 7h15M9.7 7V5.4c0-.66.54-1.2 1.2-1.2h2.2c.66 0 1.2.54 1.2 1.2V7m2.9 0-.66 11.05c-.05.84-.75 1.5-1.6 1.5H9.26c-.85 0-1.55-.66-1.6-1.5L7 7" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
       </header>
 
       <div class="chat-body" id="chat-body">

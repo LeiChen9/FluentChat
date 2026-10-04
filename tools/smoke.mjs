@@ -54,7 +54,7 @@ function mkEl(id = "", tag = "div") {
   return e;
 }
 for (const i of ["brand","greeting","unit-list","chat-name","chat-state","chat-av",
-  "chat-body","chat-bar","chat-input","chat-send","chat-back","chat-call",
+  "chat-body","chat-bar","chat-input","chat-send","chat-back","chat-call","chat-reset",
   "call","call-av","call-name","call-state","call-said","call-end",
   "view-home","view-unit","view-me","view-chat"]) els.set(i, mkEl(i));
 const tabs = [
@@ -98,6 +98,7 @@ globalThis.localStorage = {
   setItem: (k, v) => store.set(k, String(v)),
   removeItem: (k) => store.delete(k),
 };
+globalThis.confirm = () => true; // reset 的二次确认，桩里直接放行
 const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
 
 // 用 import.meta.url 拼相对路径，换 checkout 也能跑。
@@ -182,4 +183,12 @@ console.log("✓ 重进带 history:", lastFetch.body.history.length, "条",
 console.log("✓ 历史重渲染:", body.children.length, "个节点 | 末尾是复盘:",
             body.children[body.children.length - 1].className.includes("review"));
 console.log("✓ 首条还是开场白:", body.children[0].textContent);
+
+// Reset：清空本地历史 + 拆线重连，界面和模型一起回白纸
+els.get("chat-reset").fire("click");
+console.log("✓ reset 后气泡清空:", body.children.length === 0);
+console.log("✓ reset 后本地历史已删:", !store.has("fluentchat:hist:v1:unit-01"));
+await tick(10);
+const resetFetch = fetches[fetches.length - 1];
+console.log("✓ reset 重连 history 为空:", JSON.stringify(resetFetch.body.history));
 console.log("SMOKE PASS");
