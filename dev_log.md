@@ -197,3 +197,36 @@ npx wrangler deploy                  # 改了 site/ 必须部署，workers.dev �
 - 历史只存在**本机浏览器** localStorage，换设备/清缓存即全新；多设备不同步。
 - 历史随每次签 token 进 system instruction，单次上限约 30×400 字（约 8KB payload，已实测可签发）；聊得极久后要留意是否需要摘要压缩。
 
+## Chapter 2 Expression 提示词搭建与进阶链重构（2026-10-04）
+
+> 改动：`prompts/ch2-expression/unit-07..12.md`、`prompts/base.md`、`tools/gen_prompts.py`、`worker.py`、`readme.md`。
+
+### 需求与变更
+1. **Ch1 归档与改名**：原 `prompts/unit-01..06.md` 移动至 `prompts/ch1-survival/`。
+2. **Ch2 表达篇搭建**：新建 `prompts/ch2-expression/unit-07..12.md`，主题围绕职场工作展开（At Work, What Happened, How It's Done, Describe It, The Reason, Fix Mix-up）。
+3. **表达要求强化**：各单元增设「本章要求」区，明确全句输出约束、句型支架（First/Then/Finally, Because...）与流利度优先于准确度的原则。
+4. **内联 Prompt 生成工具修复**：`tools/gen_prompts.py` 原 `glob("unit-*.md")` 无法搜到子目录，改用 `rglob("unit-*.md")` 递归搜索并内联至 `worker.py`。
+5. **文档更新**：更新 README.md，补充 Chapter 2 表达篇的定位与 Unit 07..12 列表信息。
+
+### 详细清单
+| 文件 | 改动 |
+| --- | --- |
+| `prompts/ch1-survival/unit-01..06.md` | 存储生存篇 Prompt 源码 |
+| `prompts/ch2-expression/unit-07..12.md` | 包含工作日常、经历阐述、步骤说明、物品描述、原因解释、误会澄清 |
+| `tools/gen_prompts.py` | 采用 `Path.rglob("unit-*.md")` 抓取多级目录 prompt |
+| `worker.py` | 同步内联最新的 Ch1 与 Ch2 完整 prompt 字典 |
+| `readme.md` | 补充 Expression 章节结构说明与对应 Units 目录 |
+
+### 验证
+- `python3 tools/gen_prompts.py` 成功生成全量 12 个 Units 的 Prompt 内联代码。
+- `python3 -m py_compile worker.py tools/gen_prompts.py` 语法编译无错误。
+- `worker.py` 内部 `PROMPTS` 字典检索确认包含 `unit-01` 至 `unit-12` 全部新版内容。
+
+### 待测试
+- 真机验证 Chapter 2 表达篇各个 Unit 的 AI 对话引导与复盘质量。
+
+### Ch2 独立 base prompt（base-ch2.md）
+- Ch2 不再和 Ch1 共用 `base.md`：新建 `prompts/base-ch2.md`，难度升到 A2-B1（单轮 1-3 句、8-18 词），优先级改为 P1 表达流利度与连贯完整句 > P2 结构与专业度 > P3 语法；提问改为开放性问题（What happened / How do you usually handle / Why did you choose），引导用户用单元里的表达支架。
+- `worker.py` 的 `build_system_instruction()` 按 unit 号选 base：unit-07..12 用 `base-ch2.md`，unit-01..06 仍用 `base.md`。
+- 单元话题同步调整：unit-08 改「最近的一段工作经历」，unit-09 改「具体做法带专业细节」，unit-12 从「澄清误会」改成「聊哪里不足可以提升」。
+

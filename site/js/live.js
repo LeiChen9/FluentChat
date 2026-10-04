@@ -20,6 +20,28 @@ const UNITS = [
   { id: "unit-04", title: "Weekend Plans", msg: "这周末有什么安排？" },
   { id: "unit-05", title: "Where You Live", msg: "你现在住在哪里呀" },
   { id: "unit-06", title: "Free Time", msg: "平时下班都做什么呀" },
+  { id: "unit-07", title: "At Work", msg: "上班平时都在忙什么呀" },
+  { id: "unit-08", title: "Recent Experience", msg: "最近工作上有什么事发生吗" },
+  { id: "unit-09", title: "How It's Done", msg: "说说你是怎么做那件事的" },
+  { id: "unit-10", title: "Describe It", msg: "你的工位或常用工具长什么样呀" },
+  { id: "unit-11", title: "The Reason", msg: "最近工作上做过什么决定吗" },
+  { id: "unit-12", title: "What to Improve", msg: "工作里有没有想改进的地方" },
+];
+
+// 按 Chapter 分组（默认全展开）
+const CHAPTERS = [
+  {
+    id: "ch1",
+    title: "Chapter 1",
+    subtitle: "Survival",
+    units: UNITS.slice(0, 6), // unit-01 ~ unit-06
+  },
+  {
+    id: "ch2",
+    title: "Chapter 2",
+    subtitle: "Expression",
+    units: UNITS.slice(6, 12), // unit-07 ~ unit-12
+  },
 ];
 
 // 头像只用正常猫的毛色：奶油 / 橘 / 银渐层 / 棕虎斑 / 灰 / 深灰，没有粉也没有蓝。
@@ -119,20 +141,64 @@ export function initChat({ show, back }) {
   let reviewIdle = null;
   let reviewCap = null;
 
-  // ── 对话列表 ──
-  for (const [i, u] of UNITS.entries()) {
-    const [avBg, avFx] = AVATARS[i % AVATARS.length];
-    const li = document.createElement("li");
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "unit";
-    btn.innerHTML =
-      `<span class="avatar" style="--av:${avBg}">` +
-      `<img src="assets/npc-cat.webp" alt="" style="--fx:${avFx}"></span>` +
-      `<span class="unit__text"><b>${u.title}</b><i>${u.msg}</i></span>`;
-    btn.addEventListener("click", () => openChat(u));
-    li.append(btn);
-    list.append(li);
+  // ── 对话列表（按 Chapter 分组，可折叠，默认全展开） ──
+  const chapterList = document.getElementById("chapter-list");
+  for (const ch of CHAPTERS) {
+    const chapterEl = document.createElement("section");
+    chapterEl.className = "chapter is-expanded";
+    chapterEl.dataset.chapter = ch.id;
+
+    const header = document.createElement("button");
+    header.type = "button";
+    header.className = "chapter__header";
+    header.setAttribute("aria-expanded", "true");
+    header.innerHTML =
+      `<span class="chapter__title"><b>${ch.title}</b><i>${ch.subtitle}</i></span>` +
+      `<span class="chapter__chevron">` +
+      `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">` +
+      `<path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>` +
+      `</svg>` +
+      `</span>`;
+
+    const body = document.createElement("div");
+    body.className = "chapter__body";
+
+    const ul = document.createElement("ul");
+    ul.className = "unit-list";
+
+    for (let j = 0; j < ch.units.length; j++) {
+      const u = ch.units[j];
+      const globalIndex = UNITS.indexOf(u);
+      const [avBg, avFx] = AVATARS[globalIndex % AVATARS.length];
+      const li = document.createElement("li");
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "unit";
+      btn.innerHTML =
+        `<span class="avatar" style="--av:${avBg}">` +
+        `<img src="assets/npc-cat.webp" alt="" style="--fx:${avFx}"></span>` +
+        `<span class="unit__text"><b>${u.title}</b><i>${u.msg}</i></span>`;
+      btn.addEventListener("click", () => openChat(u));
+      li.append(btn);
+      ul.append(li);
+    }
+
+    body.append(ul);
+    chapterEl.append(header, body);
+    chapterList.append(chapterEl);
+
+    header.addEventListener("click", () => {
+      const expanded = chapterEl.classList.contains("is-expanded");
+      if (expanded) {
+        chapterEl.classList.remove("is-expanded");
+        chapterEl.classList.add("is-collapsed");
+        header.setAttribute("aria-expanded", "false");
+      } else {
+        chapterEl.classList.add("is-expanded");
+        chapterEl.classList.remove("is-collapsed");
+        header.setAttribute("aria-expanded", "true");
+      }
+    });
   }
 
   // ── 界面小工具 ──
