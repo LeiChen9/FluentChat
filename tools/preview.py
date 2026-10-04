@@ -14,9 +14,8 @@ rgb = np.array(im)[..., :3].astype(np.float64)
 a = (np.array(im)[..., 3].astype(np.float64) / 255.0)[..., None]
 
 # ASCII 用 gamma 偏重的映射，暗部才看得清
-for name, bg in (("浅色 #FBFBFD", (251, 251, 253)),
-                 ("深色 #000000", (0, 0, 0)),
-                 ("深色 #1C1C1E", (28, 28, 30))):
+# 底色跟 site/css/app.css 的 --bg 一致（全站只做浅色，深色已移除）
+for name, bg in (("浅色 #FAF6EE", (250, 246, 238)),):
     comp = rgb * a + np.array(bg, float) * (1 - a)
     print(f"--- {name} ---")
     print(ascii_art(comp.mean(axis=2), chars=" .:-=+*#%@"))

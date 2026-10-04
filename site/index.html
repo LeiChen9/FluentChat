@@ -3,9 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="color-scheme" content="light dark">
-<meta name="theme-color" content="#FBFBFD" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+<meta name="color-scheme" content="light">
+<meta name="theme-color" content="#FAF6EE">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <title>FluentChat</title>
@@ -14,9 +13,14 @@
 <body>
 <div class="app">
 
+  <!-- 左上角品牌：点回首页（NPC 页） -->
+  <header class="topbar">
+    <button class="brand" id="brand" type="button" aria-label="回到首页">FluentChat</button>
+  </header>
+
   <main class="stage">
 
-    <!-- ── Free Chat（首页本体） ── -->
+    <!-- ── 首页（NPC 页）：左上角 FluentChat 回这里 ── -->
     <section class="view view--center is-active" id="view-home">
       <div class="hero">
         <div class="npc-wrap">
@@ -31,18 +35,58 @@
     <section class="view" id="view-unit" hidden>
       <header class="page-head">
         <h1 class="page-title">Unit</h1>
-        <p class="page-sub">点一个场景直接开聊</p>
+        <p class="page-sub">选一个对话，直接开口聊</p>
       </header>
 
       <ul class="unit-list" id="unit-list"></ul>
+    </section>
 
-      <!-- 通话中：显示 AI 转写文字 + 播 AI 声音，同时把麦克风上行 -->
-      <div class="talk" id="talk" hidden>
-        <div class="talk__card">
-          <p class="talk__label" id="talk-label">准备中</p>
-          <p class="talk__said" id="talk-said"></p>
-        </div>
-        <button class="talk__end" id="talk-end" type="button">结束</button>
+    <!-- ── 对话页：Unit 列表点一个就 push 进这里，像 WhatsApp 单个聊天 ── -->
+    <section class="view view--chat" id="view-chat" hidden>
+      <header class="chat-head">
+        <button class="chat-back" id="chat-back" type="button" aria-label="返回对话列表">
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M15 4.5 7.5 12 15 19.5" stroke="currentColor" stroke-width="2.2"
+                  stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+
+        <span class="avatar chat-av" id="chat-av"><img src="assets/npc-cat.webp" alt=""></span>
+
+        <span class="chat-id">
+          <b id="chat-name">Unit</b>
+          <i id="chat-state">连接中…</i>
+        </span>
+      </header>
+
+      <div class="chat-body" id="chat-body">
+        <p class="chat-day">今天</p>
+        <!-- 气泡 / 复盘卡片由 live.js 注入 -->
+      </div>
+
+      <!-- 底下这一条：左边打电话，右边文字输入 -->
+      <form class="chat-bar" id="chat-bar" autocomplete="off">
+        <button class="chat-call" id="chat-call" type="button" aria-label="开始语音通话" disabled>
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M6.8 3.6c.6-.6 1.6-.6 2.2 0l2 2c.6.6.6 1.6 0 2.2l-1.2 1.2c.9 1.7 2.3 3.1 4 4l1.2-1.2c.6-.6 1.6-.6 2.2 0l2 2c.6.6.6 1.6 0 2.2l-1.3 1.3c-.8.8-2 1.1-3.1.7C9.5 16.6 6.2 13.3 4 8.6c-.4-1.1-.1-2.3.7-3.1l2.1-1.9Z" fill="currentColor"/>
+          </svg>
+        </button>
+        <input class="chat-input" id="chat-input" type="text" placeholder="连接中…"
+               enterkeyhint="send" autocomplete="off" aria-label="输入消息" disabled>
+        <button class="chat-send" id="chat-send" type="submit" disabled>发送</button>
+      </form>
+
+      <!-- 通话中：盖住整个对话页 -->
+      <div class="call" id="call" hidden>
+        <span class="avatar call-av" id="call-av"><img src="assets/npc-cat.webp" alt=""></span>
+        <p class="call__name" id="call-name">Unit</p>
+        <p class="call__state" id="call-state">正在接通…</p>
+        <p class="call__said" id="call-said"></p>
+        <button class="call__end" id="call-end" type="button" aria-label="挂断">
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M6.8 3.6c.6-.6 1.6-.6 2.2 0l2 2c.6.6.6 1.6 0 2.2l-1.2 1.2c.9 1.7 2.3 3.1 4 4l1.2-1.2c.6-.6 1.6-.6 2.2 0l2 2c.6.6.6 1.6 0 2.2l-1.3 1.3c-.8.8-2 1.1-3.1.7C9.5 16.6 6.2 13.3 4 8.6c-.4-1.1-.1-2.3.7-3.1l2.1-1.9Z" fill="currentColor"/>
+          </svg>
+        </button>
       </div>
     </section>
 
@@ -58,7 +102,8 @@
 
   <!-- ── 底部栏 ── -->
   <nav class="tabbar" role="tablist" aria-label="主导航">
-    <button class="tab" role="tab" data-view="home" aria-selected="true" aria-controls="view-home">
+    <!-- Free Chat 还没设计，先置灰占位；首页走左上角 FluentChat 回 NPC 页 -->
+    <button class="tab" role="tab" aria-selected="false" disabled>
       <svg viewBox="0 0 28 28" fill="none" aria-hidden="true">
         <path d="M9 4.5h10a6 6 0 0 1 6 6v3.5a6 6 0 0 1-6 6h-3.6l-5.4 3.2V20H9a6 6 0 0 1-6-6v-3.5a6 6 0 0 1 6-6Z" fill="currentColor"/>
       </svg>

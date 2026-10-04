@@ -8,34 +8,30 @@
   --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
           "PingFang SC", "Helvetica Neue", Arial, sans-serif;
 
-  --bg: #fbfbfd;
-  --ink: #1c1c1e;
-  --ink-2: rgba(60, 60, 67, 0.60);
-  --ink-3: rgba(60, 60, 67, 0.30);
-  --hairline: rgba(60, 60, 67, 0.16);
+  /* 温暖大地色系：奶油底 + 暖褐墨 + 鼠尾草绿点缀。 */
+  --bg: #faf6ee;
+  --ink: #3e362e;
+  --ink-2: rgba(62, 54, 46, 0.62);
+  --ink-3: rgba(62, 54, 46, 0.32);
+  --hairline: rgba(62, 54, 46, 0.14);
 
-  --accent: #5e5ce6;
-  --glow: rgba(94, 92, 230, 0.14);
-  --bar-bg: rgba(249, 249, 251, 0.72);
+  /* #47703f 是算出来的：白字压它 5.7:1，它压 --glow 底（复盘标签）4.6:1，
+     都过 AA。要更淡就把 --glow 的 alpha 调小，别动 --accent。 */
+  --accent: #47703f;
+  --glow: rgba(126, 168, 116, 0.18);
+  --bar-bg: rgba(250, 246, 238, 0.72);
+
+  /* 聊天气泡。对方是纸白、我这方是淡青草绿：
+     绿底压深墨 9.4:1，比深绿底白字轻，配暖底也不脏。 */
+  --bubble-in: #fffdf7;
+  --bubble-out: #dce9d0;
 
   --spring: cubic-bezier(0.32, 0.72, 0, 1);
   --soft: cubic-bezier(0.4, 0, 0.2, 1);
   --bar-h: 49px;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #000000;
-    --ink: #f5f5f7;
-    --ink-2: rgba(235, 235, 245, 0.60);
-    --ink-3: rgba(235, 235, 245, 0.30);
-    --hairline: rgba(235, 235, 245, 0.18);
-
-    --accent: #7d7aff;
-    --glow: rgba(125, 122, 255, 0.20);
-    --bar-bg: rgba(22, 22, 24, 0.72);
-  }
-}
+/* 深色模式不做了：全站钉死浅色，看着暖也省心。 */
 
 /* ── Reset ── */
 * { box-sizing: border-box; }
@@ -69,6 +65,32 @@ button { font: inherit; color: inherit; }
   flex: 1 1 auto;
   min-height: 0;
 }
+
+/* ── Top bar：左上角品牌，点回首页。对话页有自己的 header，整条藏掉 ── */
+.topbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  padding: calc(env(safe-area-inset-top) + 12px) 22px 4px;
+}
+
+.topbar[hidden] { display: none; }
+
+.brand {
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+  color: var(--ink);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+  transition: opacity 200ms var(--soft);
+}
+
+.brand:active { opacity: .5; }
 
 /* ── Views ── */
 .view {
@@ -136,9 +158,9 @@ button { font: inherit; color: inherit; }
   margin: 0 auto;
   -webkit-touch-callout: none;
   user-select: none;
-  /* 浅色底下：猫身是奶油白(220)，页面是 251，差 31 级。
-     靠投影把轮廓托出来，不然糊在背景里。 */
-  filter: drop-shadow(0 14px 30px rgba(30, 30, 50, 0.14));
+  /* 浅色底下：猫身是奶油白，页面也是暖奶油色，两者太接近，
+     靠投影把轮廓托出来，不然糊在背景里。阴影带点褐，配暖底才不显脏。 */
+  filter: drop-shadow(0 14px 30px rgba(120, 96, 70, 0.20));
   animation: breathe 4.6s var(--soft) infinite;
 }
 
@@ -150,11 +172,6 @@ button { font: inherit; color: inherit; }
 @keyframes breathe {
   0%, 100% { transform: scale(1) translateY(0); }
   50%      { transform: scale(1.025) translateY(-3px); }
-}
-
-/* 深色底下猫是奶油白，投影没意义，换成辉光 */
-@media (prefers-color-scheme: dark) {
-  .npc { filter: drop-shadow(0 0 38px rgba(125, 122, 255, 0.34)); }
 }
 
 /* ── Greeting ── */
@@ -247,62 +264,361 @@ button { font: inherit; color: inherit; }
 .tab[aria-selected="true"] svg { animation: tabPop 420ms var(--spring); }
 .tab:active svg { transform: scale(.86); }
 
+/* 没做的功能：置灰，不可点 */
+.tab:disabled {
+  opacity: .34;
+  cursor: default;
+}
+.tab:disabled svg { transform: none; }
+
+/* 对话页全屏时整条收起来（见 app.js showView） */
+.tabbar[hidden] { display: none; }
+
 @keyframes tabPop {
   0%   { transform: scale(.84); }
   60%  { transform: scale(1.08); }
   100% { transform: scale(1); }
 }
 
-/* ── Unit 列表 ── */
+/* ── 对话列表：一行一个头像 + 对方先开的那句口 ── */
 #view-unit { overflow-y: auto; -webkit-overflow-scrolling: touch; }
 
 .page-head { padding: 22px 22px 12px; }
 .page-title { margin: 0; font-size: 30px; font-weight: 700; letter-spacing: -0.02em; }
 .page-sub { margin: 4px 0 0; font-size: 14px; color: var(--ink-2); }
 
-.unit-list { list-style: none; margin: 0; padding: 0 12px; }
+.unit-list { list-style: none; margin: 0; padding: 0; }
 
 .unit {
-  display: flex; align-items: center; gap: 14px;
-  width: 100%; padding: 15px 14px; margin-bottom: 8px;
-  border: 0.5px solid var(--hairline); border-radius: 16px;
-  background: var(--bg); color: var(--ink);
+  position: relative;
+  display: flex; align-items: center; gap: 12px;
+  width: 100%; padding: 10px 16px;
+  border: 0; background: none;
+  color: var(--ink);
   text-align: left; cursor: pointer;
-  transition: transform 200ms var(--soft), opacity 200ms var(--soft);
+  transition: background 160ms var(--soft);
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+}
+.unit:active { background: rgba(62, 54, 46, 0.07); }
+.unit:disabled { opacity: .4; cursor: default; }
+
+/* 分隔线从头像右边起（16 + 48 + 12 = 76px），iOS 列表的习惯 */
+.unit-list li + li .unit::before {
+  content: "";
+  position: absolute; left: 76px; right: 0; top: 0;
+  height: 0.5px; background: var(--hairline);
+}
+
+.avatar {
+  position: relative;
+  flex: 0 0 auto;
+  width: 48px; height: 48px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: var(--av, var(--glow));
+}
+.avatar img {
+  display: block;
+  width: 100%; height: 100%;
+  object-fit: cover;
+  /* 图已裁到贴边，头就在顶上：从顶部放大，脸才进得了这个圆 */
+  object-position: 50% 0;
+  transform: scale(1.5);
+  transform-origin: 50% 0;
+  filter: var(--fx, none);
+}
+.avatar::after {
+  content: "";
+  position: absolute; inset: 0;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 0.5px rgba(62, 54, 46, 0.16);
+  pointer-events: none;
+}
+
+.unit__text {
+  flex: 1 1 auto; min-width: 0;
+  display: flex; flex-direction: column; gap: 3px;
+}
+.unit__text b { font-size: 16px; font-weight: 600; letter-spacing: -0.01em; }
+.unit__text i {
+  font-style: normal; font-size: 14px; line-height: 1.35;
+  color: var(--ink-2);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* ── 对话页：WhatsApp / WeChat 那种单聊 ── */
+.view--chat {
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 0;
+  overflow: hidden;
+}
+
+/* push 进来的，横着滑进去比淡入更像「开了一个聊天」 */
+.view--chat.is-active { animation: chatIn 320ms var(--spring) both; }
+
+@keyframes chatIn {
+  from { opacity: 0; transform: translateX(26px); }
+  to   { opacity: 1; transform: none; }
+}
+
+.chat-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: calc(env(safe-area-inset-top) + 8px) 12px 8px;
+  background: var(--bar-bg);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  backdrop-filter: blur(20px) saturate(180%);
+  border-bottom: 0.5px solid var(--hairline);
+}
+
+.chat-back {
+  flex: 0 0 auto;
+  width: 36px; height: 36px;
+  display: grid; place-items: center;
+  padding: 0; border: 0; border-radius: 50%;
+  background: none;
+  color: var(--accent);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+}
+.chat-back svg { width: 22px; height: 22px; }
+.chat-back:active { background: rgba(71, 112, 63, .1); }
+
+.chat-av { width: 40px; height: 40px; }
+
+.chat-id {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.chat-id b {
+  font-size: 16.5px;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-id i {
+  font-style: normal;
+  font-size: 12px;
+  color: var(--ink-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px 14px 18px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+
+.chat-day {
+  align-self: center;
+  margin: 0 0 4px;
+  padding: 3px 11px;
+  border-radius: 999px;
+  background: rgba(62, 54, 46, 0.06);
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.msg {
+  max-width: 78%;
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: 18px;
+  font-size: 15.5px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  animation: msgIn 240ms var(--spring) both;
+}
+
+.msg--ai {
+  align-self: flex-start;
+  background: var(--bubble-in);
+  border: 0.5px solid var(--hairline);
+  border-bottom-left-radius: 6px;
+  color: var(--ink);
+}
+
+.msg--me {
+  align-self: flex-end;
+  background: var(--bubble-out);
+  border-bottom-right-radius: 6px;
+  color: var(--ink);
+}
+
+@keyframes msgIn {
+  from { opacity: 0; transform: translateY(6px) scale(.97); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* 挂断后的复盘：整宽卡片，和普通气泡区分开 */
+.review {
+  flex: 0 0 auto;
+  margin: 8px 0 2px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: var(--glow);
+  border: 0.5px solid rgba(71, 112, 63, 0.24);
+  animation: msgIn 300ms var(--spring) both;
+}
+.review__label {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+}
+.review__text {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.62;
+  color: var(--ink);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.review.is-loading .review__text { color: var(--ink-2); }
+
+.chat-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 8px 12px calc(8px + env(safe-area-inset-bottom));
+  background: var(--bar-bg);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  backdrop-filter: blur(20px) saturate(180%);
+  border-top: 0.5px solid var(--hairline);
+}
+
+.chat-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 10px 15px;
+  border: 0.5px solid var(--hairline);
+  border-radius: 999px;
+  background: var(--bg);
+  font: inherit;
+  /* 16px 起：再小 iOS 聚焦会把页面放大 */
+  font-size: 16px;
+  color: var(--ink);
+  outline: none;
+  -webkit-appearance: none;
+}
+.chat-input::placeholder { color: var(--ink-3); }
+.chat-input:disabled { opacity: .55; }
+
+.chat-send {
+  flex: 0 0 auto;
+  padding: 10px 17px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
   -webkit-tap-highlight-color: transparent;
 }
-.unit:active { transform: scale(.97); }
-.unit:disabled { opacity: .38; }
+.chat-send:disabled { opacity: .38; cursor: default; }
+.chat-send:not(:disabled):active { opacity: .78; }
 
-.unit__no {
-  flex: 0 0 auto; width: 38px; height: 38px;
+/* 打电话键：并排放在输入框左边，一条栏里两件事都能干 */
+.chat-bar .chat-call {
+  flex: 0 0 auto;
+  width: 40px; height: 40px;
+  margin-bottom: 1px;
   display: grid; place-items: center;
-  border-radius: 11px; background: var(--glow);
-  color: var(--accent); font-size: 14px; font-weight: 600;
+  padding: 0;
+  border: 0.5px solid var(--hairline);
+  border-radius: 50%;
+  background: var(--bg);
+  color: var(--accent);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
 }
-.unit__text { display: flex; flex-direction: column; gap: 2px; }
-.unit__text b { font-size: 16px; font-weight: 600; }
-.unit__text i { font-style: normal; font-size: 13px; color: var(--ink-2); }
+.chat-bar .chat-call svg { width: 21px; height: 21px; }
+.chat-bar .chat-call:disabled { opacity: .34; cursor: default; }
+.chat-bar .chat-call:not(:disabled):active { background: var(--glow); border-color: transparent; }
 
-/* ── 通话中 ── */
-.talk { padding: 4px 14px 20px; }
-.talk__card {
-  padding: 16px; border-radius: 16px;
-  background: var(--bar-bg); border: 0.5px solid var(--hairline);
+/* ── 通话中：盖住整个对话页 ── */
+.call {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: calc(env(safe-area-inset-top) + 24px) 28px calc(env(safe-area-inset-bottom) + 36px);
+  background: var(--bg);
+  text-align: center;
 }
-.talk__label { margin: 0 0 8px; font-size: 12px; color: var(--ink-2); }
-.talk.is-live .talk__label { color: var(--accent); }
-.talk__said {
-  margin: 0; font-size: 17px; line-height: 1.5;
-  min-height: 26px; color: var(--ink);
+
+.call[hidden] { display: none; }
+
+.call-av {
+  width: 112px; height: 112px;
+  margin-top: 5vh;
 }
-.talk__end {
-  display: block; width: 100%; margin-top: 12px; padding: 13px;
-  border: 0; border-radius: 14px;
-  background: var(--glow); color: var(--accent);
-  font-size: 16px; font-weight: 600; cursor: pointer;
+.call-av img { transform: scale(1.35); }
+
+.call__name {
+  margin: 18px 0 0;
+  font-size: 23px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
 }
-.talk__end:active { opacity: .7; }
+
+.call__state {
+  margin: 5px 0 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.call__said {
+  margin: 26px 0 0;
+  max-width: 30em;
+  min-height: 76px;
+  font-size: 17px;
+  line-height: 1.58;
+  color: var(--ink-2);
+}
+
+.call__end {
+  margin-top: auto;
+  width: 68px; height: 68px;
+  display: grid; place-items: center;
+  padding: 0;
+  border: 0; border-radius: 50%;
+  background: #c4503a;
+  color: #fff;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+  transition: transform 220ms var(--spring);
+}
+.call__end svg { width: 28px; height: 28px; transform: rotate(135deg); }
+.call__end:active { transform: scale(.92); }
 
 /* ── Reduced motion ── */
 @media (prefers-reduced-motion: reduce) {
@@ -311,6 +627,9 @@ button { font: inherit; color: inherit; }
   .npc-wrap,
   .greeting,
   .view.is-active,
+  .msg,
+  .review,
+  .call__end,
   .tab[aria-selected="true"] svg {
     animation: none !important;
   }
