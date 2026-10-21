@@ -9,6 +9,7 @@
 服务端强制生效，用户改不了。
 """
 
+import asyncio
 import json
 from workers import Response, WorkerEntrypoint, fetch as js_fetch
 
@@ -38,6 +39,143 @@ VOICE_BY_ID = {
 # 免得请求体膨胀（也防前端传一堆垃圾进来）。
 HIST_MAX_ITEMS = 30
 HIST_MAX_CHARS = 400
+
+
+# ── 文字对话的模型容灾链（参考 argus/backend/common.py 的写法）──────────────
+# 场景差异：社交媒体聊天不要求实时，链全挂就直接报错，恢复交给以后的重试层。
+# 没有流式（SSE 砍掉）、没有 tools、语音 /token 一条路不掺和。
+
+# 端点表：base_url / secret 名的唯一事实源。加一家只改这里 + MODEL_CHAIN 一行。
+ENDPOINTS = {
+    "agnes": {"base_url": "https://apihub.agnes-ai.com/v1/", "env": "AGNES_API_KEY"},
+    "kilo": {"base_url": "https://ai-gateway.kilo.ai/api/v1/", "env": "KILO_API_KEY"},
+    "cohere": {"base_url": "https://api.cohere.ai/compatibility/v1/", "env": "COHERE_API_KEY"},
+    "requesty": {"base_url": "https://router.requesty.ai/v1/", "env": "REQUESTY_API_KEY"},
+    "openrouter": {"base_url": "https://openrouter.ai/api/v1/", "env": "OPENROUTER_API_KEY"},
+    "groq": {"base_url": "https://api.groq.com/openai/v1/", "env": "GROQ_API_KEY"},
+}
+
+# Groq 免费层输入上限 8000 token/分钟，超了直接 413。按估算提前跳过。
+# 西文约 4 字符/token、CJK 约 1 字/token，刻意高估——低估会把被拒的请求
+# 放进去，高估只是提前跳过一个模型，不改变链的正确性。
+GROQ_MAX_INPUT_TOKENS = 7000
+
+# 模型链：照搬 argus 实测可用的条目，只留我们有 key 的端点。deepseek 不入链
+#（要 chinese_calendar 做时段闸门，成本不匹配）；gemini 也不入——唯一那把
+# Google key 是语音专用的（gemini_live_apiKey），不能拿来蹭文字账。
+MODEL_CHAIN = [
+    {"name": "minimax/minimax-m3.1-flash:free", "endpoint": "kilo"},
+    {"name": "command-a-plus-05-2026", "endpoint": "cohere"},
+    {"name": "command-a-reasoning-08-2025", "endpoint": "cohere"},
+    {"name": "nvidia/nemotron-3.5-lightning-30b-a3b", "endpoint": "requesty"},
+    {"name": "novita/ling-3.1-flash", "endpoint": "requesty"},
+    {"name": "openai/gpt-oss-120b", "endpoint": "groq", "max_input_tokens": GROQ_MAX_INPUT_TOKENS},
+    {"name": "openai/gpt-oss-20b", "endpoint": "groq", "max_input_tokens": GROQ_MAX_INPUT_TOKENS},
+    {"name": "north-mini-code-1-0", "endpoint": "cohere"},
+    {"name": "nvidia/muse-glimmer-30b", "endpoint": "requesty"},
+    {"name": "liquid/lfm-2.5-2.6b:free", "endpoint": "openrouter"},
+    {"name": "agnes-3.0-flash", "endpoint": "agnes"},
+    {"name": "poolside/laguna-s-2.1:free", "endpoint": "kilo"},
+    {"name": "qwen/qwen3.8-27b", "endpoint": "groq", "max_input_tokens": GROQ_MAX_INPUT_TOKENS},
+    {"name": "nvidia/nemotron-3-super-120b-a12b:free", "endpoint": "kilo"},
+]
+
+
+# Worker 侧 bindings 注入（照搬 argus 的 bind_worker_env）：fetch 进来时把
+# self.env 存在这里，链上取 key 都走它。离线脚本里它为空，链视为不可用。
+_WORKER_ENV = {"env": None}
+
+
+def bind_worker_env(env) -> None:
+    """每次 fetch 先调：绑定本 isolate 的 env。"""
+    _WORKER_ENV["env"] = env
+
+
+def _env_key(env: str) -> str | None:
+    """读 secret 的值。worker.env 是 JS 代理对象，不能 .get()。"""
+    wenv = _WORKER_ENV["env"]
+    if wenv is None:
+        return None
+    try:
+        val = getattr(wenv, env)
+    except Exception:
+        return None
+    return str(val) if val else None
+
+
+def input_tokens(messages: list[dict]) -> int:
+    """估输入 token 数，给 groq 的闸门用。西文 4 字符/token、CJK 1 字/token。"""
+    def est(s: str) -> int:
+        ascii_len = len(s.encode("ascii", errors="ignore"))
+        return (len(s) - ascii_len) + ascii_len // 4
+    return sum(est(m.get("content") or "") for m in messages)
+
+
+# 文字聊天加在 persona prompt 后面的通用规则：活人感，短，不教训人。
+TEXT_STYLE = (
+    " # 平台角色（聊天软件短消息）\n"
+    "- You're texting a friend in a chat app, not tutoring. 1-2 short casual "
+    "sentences per message; lowercase is fine; emoji rare and sparingly.\n"
+    "- Never correct the user's English, never lecture, never offer lessons or "
+    "structured help. Sound like a real person, not an assistant.\n"
+    "- Reply to what they actually said. If the history is empty, send the "
+    "opening line from「Today's topic」instead.")
+
+
+def to_messages(unit: str, history: list[dict]) -> list[dict]:
+    """persona prompt（只性格与小传，无教学规则）钉 system，历史转 user/assistant。"""
+    sys_text = read_prompt(unit) + TEXT_STYLE
+    msgs = [{"role": "system", "content": sys_text}]
+    if not history:
+        msgs.append({"role": "user",
+                     "content": "(You just came online. Send your opening line.)"})
+        return msgs
+    for h in history:
+        msgs.append({"role": "user" if h["who"] == "me" else "assistant",
+                     "content": h["text"]})
+    return msgs
+
+
+async def _chat_via(item: dict, messages: list[dict]) -> str:
+    """单模型单试。20s 兜底：光等响应头，管不住上游收了请求不吐字节的挂法。"""
+    ep = ENDPOINTS[item["endpoint"]]
+    url = ep["base_url"] + "chat/completions"
+    payload = json.dumps({"model": item["name"], "messages": messages})
+    resp = await asyncio.wait_for(
+        js_fetch(url, method="POST",
+                 headers={"Authorization": f"Bearer {_env_key(ep['env'])}",
+                          "Content-Type": "application/json"},
+                 body=payload),
+        timeout=20.0)
+    if resp.status != 200:
+        raise RuntimeError(f"HTTP {resp.status}: {(await resp.text())[:200]}")
+    data = await resp.json()
+    return (data["choices"][0].get("message") or {}).get("content") or ""
+
+
+async def run_chain(messages: list[dict]) -> dict:
+    """按链顺序故障转移。全挂抛 RuntimeError，失败原因逐家拼出来。"""
+    last_err = None
+    failures = []
+    tokens = input_tokens(messages)
+    for item in MODEL_CHAIN:
+        # 没配 key 的端点直接当不可用，不浪费一次 fetch
+        if not _env_key(ENDPOINTS[item["endpoint"]]["env"]):
+            continue
+        limit = item.get("max_input_tokens")
+        if limit and tokens > limit:
+            failures.append(f"{item['name']}: 输入超限跳过")
+            continue
+        try:
+            content = await _chat_via(item, messages)
+            # 200 但没正文 = 这家给不出东西，同失败降级
+            if not content.strip():
+                raise RuntimeError("空响应")
+            return {"content": content, "model": item["name"]}
+        except Exception as e:
+            last_err = e
+            failures.append(f"{item['name']}: {type(e).__name__}: {str(e)[:120]}")
+    raise RuntimeError(f"所有模型均不可用: {last_err}｜经过: {'; '.join(failures)}")
 
 
 def read_prompt(name: str) -> str:
@@ -151,15 +289,42 @@ def build_token_payload(
 
 class Default(WorkerEntrypoint):
     async def fetch(self, request):
+        # 先绑定 env，链上取 key 全靠它
+        bind_worker_env(self.env)
+
         # 健康检查：顺便确认部署成功、secret 已设
         if request.method == "GET" and request.url.endswith("/health"):
+            has = sum(bool(_env_key(ep["env"])) for ep in ENDPOINTS.values())
             return Response.json({
                 "ok": True,
                 "model": MODEL,
                 "voice": VOICE,
                 # 只回布尔，不回 key 本身
                 "has_key": get_api_key(self) is not None,
+                "chain_ready": has,
             })
+
+        # 文字对话：persona 聊天走模型容灾链（非流式）。/history 语义同 /token。
+        if request.method == "POST" and request.url.endswith("/chat"):
+            try:
+                body = await request.json()
+            except Exception:
+                return Response.json({"error": "请求体不是合法 JSON"}, status=400)
+            unit = body.get("unit")
+            if unit not in PERSONAS:
+                return Response.json(
+                    {"error": f"/chat 只面向 persona：{sorted(PERSONAS)}"},
+                    status=400)
+            history = sanitize_history(body.get("history"))
+            try:
+                out = await run_chain(to_messages(unit, history))
+            except RuntimeError as e:
+                return Response.json({"error": str(e)}, status=502)
+            except Exception as e:
+                return Response.json(
+                    {"error": "链路意外失败", "type": type(e).__name__,
+                     "detail": str(e)[:300]}, status=500)
+            return Response.json(out)
 
         if request.method != "POST":
             return Response.json({"error": "用 POST"}, status=405)
