@@ -86,9 +86,20 @@ globalThis.WebSocket = class {
   send(s) { this.sent.push(s); }
   close() { this.readyState = 3; this.onclose && this.onclose(); }
 };
-// 记下每次 /token 请求体，用来断言「重进时带上了历史」
+// 记下每次 /token 请求体，用来断言「重进时带上了历史」；
+// 顺带把 contacts 数据目录骗回去（profile.md / moments.md），列表渲染才能跑
 const fetches = [];
 globalThis.fetch = async (url, opts) => {
+  const u = String(url);
+  if (u.includes("assets/contacts")) {
+    return {
+      ok: true, status: 200,
+      text: async () => (u.includes("profile.md")
+        ? "name: Leo\nstatus: hate the fucking world and enjoy it.\npreview: Yo!\ntime: 09:12\navatar: assets/contacts/leo/avatar.png"
+        : "09:12 — Sold out before 2pm 🔥"),
+      json: async () => ({}),
+    };
+  }
   fetches.push({ url, body: opts?.body ? JSON.parse(opts.body) : null });
   return { ok: true, json: async () => ({ token: "tok", model: "m" }) };
 };
@@ -104,6 +115,7 @@ const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
 
 // 用 import.meta.url 拼相对路径，换 checkout 也能跑。
 await import(new URL("../site/js/app.js", import.meta.url).href);
+await tick(10);   // contacts 列表是异步 fetch 渲染
 console.log("✓ 模块加载");
 console.log("✓ 列表渲染 | 聊天:", els.get("chat-list").children.length,
             "| 联系人:", els.get("contact-list").children.length,

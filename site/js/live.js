@@ -3,7 +3,7 @@
 // 音频双向：AI 声音在浏览器直接播（24kHz PCM16），麦克风分片上行（16kHz PCM16）。
 // Worker 全程只签 token，不碰音频。
 
-import { PERSONAS } from "./personas.js";
+import { loadContacts } from "./personas.js";
 
 const WS_BASE =
   "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage." +
@@ -98,21 +98,23 @@ export function initChat({ show, back }) {
   let reviewIdle = null;
   let reviewCap = null;
 
-  // ── 聊天列表：persona 好友，一行一个 ──
-  const chatList = document.getElementById("chat-list");
-  for (const p of PERSONAS) {
-    const li = document.createElement("li");
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "row";
-    btn.innerHTML =
-      `<img class="row__av" src="${p.avatar}" alt="">` +
-      `<span class="row__text"><b>${p.name}</b><i>${p.msg}</i></span>` +
-      `<span class="row__time">${p.time}</span>`;
-    btn.addEventListener("click", () => openChat(p));
-    li.append(btn);
-    chatList.append(li);
-  }
+  // ── 聊天列表：persona 好友，一行一个（read 自 contacts 数据目录） ──
+  loadContacts().then((people) => {
+    const chatList = document.getElementById("chat-list");
+    for (const p of people) {
+      const li = document.createElement("li");
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "row";
+      btn.innerHTML =
+        `<img class="row__av" src="${p.avatar}" alt="">` +
+        `<span class="row__text"><b>${p.name}</b><i>${p.preview}</i></span>` +
+        `<span class="row__time">${p.time}</span>`;
+      btn.addEventListener("click", () => openChat(p));
+      li.append(btn);
+      chatList.append(li);
+    }
+  });
 
   // ── 界面小工具 ──
   function scrollDown(force) {
@@ -135,7 +137,7 @@ export function initChat({ show, back }) {
     input.disabled = !on;
     callBtn.disabled = !on;
     sendBtn.disabled = !on || !input.value.trim();
-    input.placeholder = on ? "发消息…" : "连接中…";
+    input.placeholder = on ? "Message…" : "Connecting…";
   }
 
   function addBubble(who, text) {
@@ -157,7 +159,7 @@ export function initChat({ show, back }) {
     typingEl.innerHTML = "<i></i><i></i><i></i>";
     body.append(typingEl);
     scrollDown(true);
-    setChatState("对方正在输入…");
+    setChatState("typing…");
   }
 
   function hideTyping() {
@@ -277,7 +279,7 @@ export function initChat({ show, back }) {
         liveSources = liveSources.filter((s) => s !== src);
       };
     } catch (e) {
-      noteError(`播放失败：${e.message}`);
+      noteError(`Playback failed: ${e.message}`);
     }
   }
 
@@ -324,7 +326,7 @@ export function initChat({ show, back }) {
     if (micActive || micReady) return;
     try {
       if (!navigator.mediaDevices) {
-        throw new Error("当前不是 HTTPS，浏览器不给用麦克风");
+        throw new Error("Mic is blocked outside HTTPS, browsers won't allow it");
       }
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -370,7 +372,7 @@ export function initChat({ show, back }) {
     } catch (err) {
       console.warn("麦克风无法打开:", err);
       // 显示出来，别只在 console 里（手机上看不到 console）
-      callSaid.textContent = `麦克风打不开：${err.message}`;
+      callSaid.textContent = `Mic unavailable: ${err.message}`;
     }
   }
 
@@ -422,7 +424,7 @@ export function initChat({ show, back }) {
     nameEl.textContent = u.name;
     callName.textContent = u.name;
     callSaid.textContent = "";
-    setChatState("连接中…");
+    setChatState("Connecting…");
     setReady(false);
 
     // 把上次的聊天记录摆回来（含复盘卡片），别每次都是白纸一张
@@ -465,7 +467,7 @@ export function initChat({ show, back }) {
     callSaid.textContent = "";
     for (const n of body.querySelectorAll(".msg, .review")) n.remove();
     setReady(false);
-    setChatState("连接中…");
+    setChatState("Connecting…");
   }
 
   function send(obj) {
@@ -493,7 +495,7 @@ export function initChat({ show, back }) {
     } catch (e) {
       // 等 token 这会儿用户可能已经退出/换了一个 Unit
       if (seq !== connectSeq || unit !== u) return;
-      setChatState(`连不上：${e.message}`);
+      setChatState(`Can't connect: ${e.message}`);
       return;
     }
     if (seq !== connectSeq || unit !== u) return;
@@ -512,7 +514,7 @@ export function initChat({ show, back }) {
     sock.onmessage = (e) => { if (ws === sock) onMessage(e); };
     sock.onerror = () => {
       if (ws !== sock || unit !== u) return;
-      setChatState("连接出错");
+      setChatState("Connection error");
       setReady(false);
     };
     sock.onclose = () => { if (ws === sock) onClose(u); };
@@ -532,7 +534,7 @@ export function initChat({ show, back }) {
     mode = "text";
     callBox.hidden = true;
     callSaid.textContent = "";
-    setChatState(wasCall ? "通话中断了" : "已断开");
+    setChatState(wasCall ? "Call dropped" : "Offline");
   }
 
   // ── 收消息 ──
@@ -604,8 +606,8 @@ export function initChat({ show, back }) {
         if (reviewBuf.trim() && Date.now() - reviewArmedAt > 700) finishReview();
         return;
       }
-      setChatState("在线");
-      if (mode === "call") setCallState("通话中");
+      setChatState("online");
+      if (mode === "call") setCallState("On call");
     }
   }
 
@@ -616,7 +618,7 @@ export function initChat({ show, back }) {
     mode = "call";
     callBox.hidden = false;
     callSaid.textContent = "";
-    setCallState("通话中");
+    setCallState("On call");
     enableMic();
   }
 
@@ -629,7 +631,7 @@ export function initChat({ show, back }) {
     mode = "text";
     flushPending(); // 通话里说到一半的先落下来，别丢
     if (!ready) return;
-    setChatState("在线");
+    setChatState("online");
     // 缓 700ms：挂断瞬间可能还有一轮在飞，别把它的尾巴当成复盘内容
     setTimeout(() => {
       if (ready && mode === "text" && !reviewCard) requestReview();
@@ -640,7 +642,7 @@ export function initChat({ show, back }) {
   // 不用另开接口，也不用把 transcript 传回去。
   function requestReview() {
     flushPending(); // 挂断后迟到的对话先落卡，再摆复盘卡片（保持先后顺序）
-    const { card, textEl } = addReviewCard("正在整理刚才的对话…", true);
+    const { card, textEl } = addReviewCard("Summarizing our chat…", true);
 
     reviewCard = card;
     reviewText = textEl;
@@ -668,7 +670,7 @@ export function initChat({ show, back }) {
     if (reviewCap) { clearTimeout(reviewCap); reviewCap = null; }
     reviewCard.classList.remove("is-loading");
     const text = reviewBuf.trim();
-    reviewText.textContent = text || "这次没拿到复盘，挂断一次再试试。";
+    reviewText.textContent = text || "No review this time — hang up once and try again.";
     if (text) pushHist({ kind: "review", text });
     reviewCard = null;
     reviewText = null;
@@ -683,7 +685,7 @@ export function initChat({ show, back }) {
     card.className = loading ? "review is-loading" : "review";
     const label = document.createElement("p");
     label.className = "review__label";
-    label.textContent = "复盘建议";
+    label.textContent = "Review notes";
     const t = document.createElement("p");
     t.className = "review__text";
     t.textContent = text;
@@ -697,7 +699,7 @@ export function initChat({ show, back }) {
   function resetChat() {
     const u = unit;
     if (!u) return;
-    if (!confirm("清空这段对话记录？清掉后无法恢复。")) return;
+    if (!confirm("Clear this chat? The history can't be recovered.")) return;
     teardown();
     try { localStorage.removeItem(HIST_KEY + u.id); } catch {}
     openChat(u); // unit 已被 teardown 置空，不会命中「同一个还开着」的早退分支

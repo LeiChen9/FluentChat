@@ -1,5 +1,5 @@
 import { initChat } from "./live.js";
-import { PERSONAS, MOMENTS } from "./personas.js";
+import { loadContacts } from "./personas.js";
 
 // 四个主 tab + 一个对话子页（对应 line/whatsapp 首层导航）。
 const VIEWS = ["chats", "contacts", "moments", "me", "chat"];
@@ -42,37 +42,39 @@ const chat = initChat({
 });
 leaveChat = () => chat.close();
 
-// ── 联系人页：persona 名册，点一个进对话 ──
-const contactList = document.getElementById("contact-list");
-for (const p of PERSONAS) {
-  const li = document.createElement("li");
-  const btn = document.createElement("button");
-  btn.type = "button";
-  btn.className = "row";
-  btn.innerHTML =
-    `<img class="row__av" src="${p.avatar}" alt="">` +
-    `<span class="row__text"><b>${p.name}</b><i>${p.tag}</i></span>`;
-  btn.addEventListener("click", () => chat.open(p));
-  li.append(btn);
-  contactList.append(li);
-}
+// ── 联系人页 + 朋友圈：read 自 contacts 数据目录，代码只做渲染 ──
+loadContacts().then((people) => {
+  const contactList = document.getElementById("contact-list");
+  for (const p of people) {
+    const li = document.createElement("li");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "row";
+    btn.innerHTML =
+      `<img class="row__av" src="${p.avatar}" alt="">` +
+      `<span class="row__text"><b>${p.name}</b><i>${p.status}</i></span>`;
+    btn.addEventListener("click", () => chat.open(p));
+    li.append(btn);
+    contactList.append(li);
+  }
 
-// ── 朋友圈：假的动态流，只读 ──
-const momentList = document.getElementById("moment-list");
-for (const m of MOMENTS) {
-  const p = PERSONAS.find((x) => x.id === m.who);
-  const card = document.createElement("article");
-  card.className = "moment";
-  card.innerHTML =
-    `<img class="moment__av" src="${p ? p.avatar : ""}" alt="">` +
-    `<div class="moment__body">` +
-    `<b class="moment__name">${p ? p.name : "?"}</b>` +
-    `<p class="moment__text"></p>` +
-    `<i class="moment__time">${m.time}</i>` +
-    `</div>`;
-  card.querySelector(".moment__text").textContent = m.text;
-  momentList.append(card);
-}
+  const momentList = document.getElementById("moment-list");
+  for (const p of people) {
+    for (const m of p.moments) {
+      const card = document.createElement("article");
+      card.className = "moment";
+      card.innerHTML =
+        `<img class="moment__av" src="${p.avatar}" alt="">` +
+        `<div class="moment__body">` +
+        `<b class="moment__name">${p.name}</b>` +
+        `<p class="moment__text"></p>` +
+        `<i class="moment__time">${m.time}</i>` +
+        `</div>`;
+      card.querySelector(".moment__text").textContent = m.text;
+      momentList.append(card);
+    }
+  }
+});
 
 for (const tab of tabs) {
   tab.addEventListener("click", () => showView(tab.dataset.view));
