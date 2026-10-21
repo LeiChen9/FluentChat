@@ -774,3 +774,133 @@ button { font: inherit; color: inherit; }
   height: 0.5px;
   background: var(--hairline);
 }
+
+/* ============================================================
+   聊天列表 / 联系人（LINE 式行列表）+ 朋友圈（动态卡片流）
+   ============================================================ */
+
+.row-list {
+  margin: 0;
+  padding: 4px 14px 24px;
+  list-style: none;
+}
+
+.row-list li + li .row::before {
+  content: "";
+  position: absolute;
+  left: 86px;
+  right: 0;
+  top: 0;
+  height: 0.5px;
+  background: var(--hairline);
+}
+
+.row {
+  position: relative;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 14px;
+  border: 0;
+  background: none;
+  border-radius: 14px;
+  text-align: left;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: background 180ms var(--soft);
+}
+
+.row:active { background: rgba(62, 54, 46, 0.07); }
+
+.row__av {
+  width: 52px;
+  height: 52px;
+  flex: none;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--glow);
+}
+
+.row__text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.row__text b {
+  font-size: 16.5px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.row__text i {
+  font-style: normal;
+  font-size: 13.5px;
+  color: var(--ink-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.row__time {
+  flex: none;
+  align-self: flex-start;
+  padding-top: 5px;
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+
+/* ── 朋友圈 ── */
+.moment-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 4px 22px 30px;
+}
+
+.moment {
+  display: flex;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: var(--bubble-in);
+  border: 0.5px solid var(--hairline);
+}
+
+.moment__av {
+  width: 40px;
+  height: 40px;
+  flex: none;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--glow);
+}
+
+.moment__body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.moment__name {
+  font-size: 14.5px;
+  font-weight: 650;
+}
+
+.moment__text {
+  margin: 0;
+  font-size: 14.5px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.moment__time {
+  font-style: normal;
+  font-size: 11.5px;
+  color: var(--ink-3);
+}

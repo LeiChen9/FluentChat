@@ -53,19 +53,20 @@ function mkEl(id = "", tag = "div") {
   };
   return e;
 }
-for (const i of ["brand","greeting","unit-list","chat-name","chat-state","chat-av",
+for (const i of ["chat-list","contact-list","moment-list","chat-name","chat-state","chat-av",
   "chat-body","chat-bar","chat-input","chat-send","chat-back","chat-call","chat-reset",
   "call","call-av","call-name","call-state","call-said","call-end",
-  "view-home","view-unit","view-me","view-chat"]) els.set(i, mkEl(i));
+  "view-chats","view-contacts","view-moments","view-me","view-chat"]) els.set(i, mkEl(i));
 const tabs = [
-  Object.assign(mkEl("", "button"), { dataset: { view: "free" }, disabled: true }),
-  Object.assign(mkEl("", "button"), { dataset: { view: "unit" } }),
+  Object.assign(mkEl("", "button"), { dataset: { view: "chats" } }),
+  Object.assign(mkEl("", "button"), { dataset: { view: "contacts" } }),
+  Object.assign(mkEl("", "button"), { dataset: { view: "moments" } }),
   Object.assign(mkEl("", "button"), { dataset: { view: "me" } }),
 ];
 globalThis.document = {
   getElementById: (i) => els.get(i) || null,
   createElement: (t) => mkEl("", t),
-  querySelector: (s) => (s === ".topbar" ? mkEl("", "header") : mkEl()),
+  querySelector: (s) => (s === ".tabbar" ? mkEl("", "nav") : mkEl()),
   querySelectorAll: (s) => (s === ".tab" ? tabs : []),
 };
 class AC {
@@ -104,10 +105,12 @@ const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
 // 用 import.meta.url 拼相对路径，换 checkout 也能跑。
 await import(new URL("../site/js/app.js", import.meta.url).href);
 console.log("✓ 模块加载");
-console.log("✓ 列表渲染", els.get("unit-list").children.length, "行");
+console.log("✓ 列表渲染 | 聊天:", els.get("chat-list").children.length,
+            "| 联系人:", els.get("contact-list").children.length,
+            "| 朋友圈:", els.get("moment-list").children.length);
 
-tabs[1].fire("click");
-const row = els.get("unit-list").children[0].children[0];
+tabs[0].fire("click");
+const row = els.get("chat-list").children[0].children[0];
 row.fire("click");
 await tick(10);                       // 等 fetch
 console.log("✓ 进聊天页:", !els.get("view-chat").hidden, "| name:", els.get("chat-name").textContent);
@@ -171,7 +174,7 @@ console.log("✓ 卡片没被清掉:", body.children.includes(card));
 
 // 返回列表
 els.get("chat-back").fire("click");
-console.log("✓ 返回:", !els.get("view-chat").hidden === false, "view-unit:", !els.get("view-unit").hidden,
+console.log("✓ 返回:", !els.get("view-chat").hidden === false, "view-chats:", !els.get("view-chats").hidden,
             "| ws 关闭:", ws.readyState === 3);
 
 // 重进同一个 Unit：历史从 localStorage 恢复，/token 请求带上 history
@@ -187,7 +190,7 @@ console.log("✓ 首条还是开场白:", body.children[0].textContent);
 // Reset：清空本地历史 + 拆线重连，界面和模型一起回白纸
 els.get("chat-reset").fire("click");
 console.log("✓ reset 后气泡清空:", body.children.length === 0);
-console.log("✓ reset 后本地历史已删:", !store.has("fluentchat:hist:v1:unit-01"));
+console.log("✓ reset 后本地历史已删:", !store.has("fluentchat:hist:v1:persona-leo"));
 await tick(10);
 const resetFetch = fetches[fetches.length - 1];
 console.log("✓ reset 重连 history 为空:", JSON.stringify(resetFetch.body.history));

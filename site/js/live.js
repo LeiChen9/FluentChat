@@ -3,6 +3,8 @@
 // 音频双向：AI 声音在浏览器直接播（24kHz PCM16），麦克风分片上行（16kHz PCM16）。
 // Worker 全程只签 token，不碰音频。
 
+import { PERSONAS } from "./personas.js";
+
 const WS_BASE =
   "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage." +
   "v1beta.GenerativeService.BidiGenerateContentConstrained";
@@ -10,50 +12,6 @@ const WS_BASE =
 // 音频采样率。Gemini Live 的硬性约定：输入 16kHz、输出 24kHz，都是单声道 PCM16。
 const MIC_RATE = 16000;
 const OUT_RATE = 24000;
-
-// Unit 标题，和 prompts/unit-XX.md 的「话题」对应。
-// msg 是列表里那一行字——像对方先开的口，列表才像个聊天列表。
-const UNITS = [
-  { id: "unit-01", title: "Introduce Yourself", msg: "想聊聊你自己吗？" },
-  { id: "unit-02", title: "Your Day", msg: "今天过得怎么样？" },
-  { id: "unit-03", title: "Food & Drinks", msg: "中午吃什么了呀" },
-  { id: "unit-04", title: "Weekend Plans", msg: "这周末有什么安排？" },
-  { id: "unit-05", title: "Where You Live", msg: "你现在住在哪里呀" },
-  { id: "unit-06", title: "Free Time", msg: "平时下班都做什么呀" },
-  { id: "unit-07", title: "At Work", msg: "上班平时都在忙什么呀" },
-  { id: "unit-08", title: "Recent Experience", msg: "最近工作上有什么事发生吗" },
-  { id: "unit-09", title: "How It's Done", msg: "说说你是怎么做那件事的" },
-  { id: "unit-10", title: "Describe It", msg: "你的工位或常用工具长什么样呀" },
-  { id: "unit-11", title: "The Reason", msg: "最近工作上做过什么决定吗" },
-  { id: "unit-12", title: "What to Improve", msg: "工作里有没有想改进的地方" },
-];
-
-// 按 Chapter 分组（默认全展开）
-const CHAPTERS = [
-  {
-    id: "ch1",
-    title: "Chapter 1",
-    subtitle: "Survival",
-    units: UNITS.slice(0, 6), // unit-01 ~ unit-06
-  },
-  {
-    id: "ch2",
-    title: "Chapter 2",
-    subtitle: "Expression",
-    units: UNITS.slice(6, 12), // unit-07 ~ unit-12
-  },
-];
-
-// 头像只用正常猫的毛色：奶油 / 橘 / 银渐层 / 棕虎斑 / 灰 / 深灰，没有粉也没有蓝。
-// 图是抠好底的透明 PNG，底下垫一层毛色当背景，再用 filter 把奶油白的猫染过去。
-const AVATARS = [
-  ["#e8ddc8", "none"],                                          // 奶油
-  ["#efc793", "sepia(.6) saturate(2) hue-rotate(-15deg)"],      // 橘猫
-  ["#cbc7c0", "grayscale(.9) brightness(1.02)"],                // 银渐层
-  ["#cdb187", "sepia(.85) saturate(1.8) brightness(.9)"],       // 棕虎斑
-  ["#bdb9b1", "grayscale(.9) brightness(.76) contrast(1.05)"],  // 灰猫
-  ["#d5d1c9", "grayscale(1) brightness(.6) contrast(1.2)"],     // 深灰 / 黑
-];
 
 // 挂断后发给 AI 的复盘指令。
 // base.md 里复盘是「对话式点评、说完等用户反应」，这条是追在后面的用户输入，
@@ -87,7 +45,6 @@ const HIST_CHARS = 400;
 
 export function initChat({ show, back }) {
   // ── DOM ──
-  const list = document.getElementById("unit-list");
   const nameEl = document.getElementById("chat-name");
   const stateEl = document.getElementById("chat-state");
   const avEl = document.getElementById("chat-av");
@@ -141,64 +98,20 @@ export function initChat({ show, back }) {
   let reviewIdle = null;
   let reviewCap = null;
 
-  // ── 对话列表（按 Chapter 分组，可折叠，默认全展开） ──
-  const chapterList = document.getElementById("chapter-list");
-  for (const ch of CHAPTERS) {
-    const chapterEl = document.createElement("section");
-    chapterEl.className = "chapter is-expanded";
-    chapterEl.dataset.chapter = ch.id;
-
-    const header = document.createElement("button");
-    header.type = "button";
-    header.className = "chapter__header";
-    header.setAttribute("aria-expanded", "true");
-    header.innerHTML =
-      `<span class="chapter__title"><b>${ch.title}</b><i>${ch.subtitle}</i></span>` +
-      `<span class="chapter__chevron">` +
-      `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">` +
-      `<path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>` +
-      `</svg>` +
-      `</span>`;
-
-    const body = document.createElement("div");
-    body.className = "chapter__body";
-
-    const ul = document.createElement("ul");
-    ul.className = "unit-list";
-
-    for (let j = 0; j < ch.units.length; j++) {
-      const u = ch.units[j];
-      const globalIndex = UNITS.indexOf(u);
-      const [avBg, avFx] = AVATARS[globalIndex % AVATARS.length];
-      const li = document.createElement("li");
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "unit";
-      btn.innerHTML =
-        `<span class="avatar" style="--av:${avBg}">` +
-        `<img src="assets/npc-cat.webp" alt="" style="--fx:${avFx}"></span>` +
-        `<span class="unit__text"><b>${u.title}</b><i>${u.msg}</i></span>`;
-      btn.addEventListener("click", () => openChat(u));
-      li.append(btn);
-      ul.append(li);
-    }
-
-    body.append(ul);
-    chapterEl.append(header, body);
-    chapterList.append(chapterEl);
-
-    header.addEventListener("click", () => {
-      const expanded = chapterEl.classList.contains("is-expanded");
-      if (expanded) {
-        chapterEl.classList.remove("is-expanded");
-        chapterEl.classList.add("is-collapsed");
-        header.setAttribute("aria-expanded", "false");
-      } else {
-        chapterEl.classList.add("is-expanded");
-        chapterEl.classList.remove("is-collapsed");
-        header.setAttribute("aria-expanded", "true");
-      }
-    });
+  // ── 聊天列表：persona 好友，一行一个 ──
+  const chatList = document.getElementById("chat-list");
+  for (const p of PERSONAS) {
+    const li = document.createElement("li");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "row";
+    btn.innerHTML =
+      `<img class="row__av" src="${p.avatar}" alt="">` +
+      `<span class="row__text"><b>${p.name}</b><i>${p.msg}</i></span>` +
+      `<span class="row__time">${p.time}</span>`;
+    btn.addEventListener("click", () => openChat(p));
+    li.append(btn);
+    chatList.append(li);
   }
 
   // ── 界面小工具 ──
@@ -498,14 +411,16 @@ export function initChat({ show, back }) {
     teardown();
     unit = u;
 
-    const [avBg, avFx] = AVATARS[UNITS.indexOf(u) % AVATARS.length];
-    avEl.style.setProperty("--av", avBg);
-    avImg.style.setProperty("--fx", avFx);
-    callAv.style.setProperty("--av", avBg);
-    callAvImg.style.setProperty("--fx", avFx);
+    // 头像直接用 persona 自己的照片，不再靠猫图染色
+    avImg.src = u.avatar;
+    avImg.style.removeProperty("--fx");
+    avEl.style.removeProperty("--av");
+    callAvImg.src = u.avatar;
+    callAvImg.style.removeProperty("--fx");
+    callAv.style.removeProperty("--av");
 
-    nameEl.textContent = u.title;
-    callName.textContent = u.title;
+    nameEl.textContent = u.name;
+    callName.textContent = u.name;
     callSaid.textContent = "";
     setChatState("连接中…");
     setReady(false);
@@ -810,5 +725,9 @@ export function initChat({ show, back }) {
     showTyping(); // 后台慢慢算，界面上先给个「正在输入…」
   });
 
-  return { close: teardown };
+  return {
+    close: teardown,
+    // 联系人页也从这里进对话
+    open: openChat,
+  };
 }
