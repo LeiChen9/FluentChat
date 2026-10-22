@@ -75,7 +75,6 @@ export function initChat({ show, back }) {
 
   // 麦克风 / 播放
   let audioCtx = null;
-  let wakeSent = false;
   let micStream = null;
   let micSrc = null;
   let micProc = null;
@@ -247,14 +246,7 @@ export function initChat({ show, back }) {
     setChatState(STATUS_LABEL[statusOf(unit, new Date())]);
   }
 
-  // 空格唤醒 = 角色开口。离线的人不接话：不 wake，留在状态轮里等他醒。
-  function maybeWake() {
-    if (!ready || wakeSent || mode !== "text") return;
-    if (statusOf(unit, new Date()) === "offline") { setChatState("Offline"); return; }
-    wakeSent = true;
-    send({ realtimeInput: { text: " " } });
-    showTyping();
-  }
+  // 空格唤醒已取消：角色不主动开口，用户先说话，回话交给 outQueue 节奏。
 
   // 按作息抽一个延迟到点才发；话题正热（AI 刚回过话不久）则直接秒回，
   // 小概率「角色走开」等一阵再回；较长的干等期间顶栏显示状态而非 typing。
@@ -299,6 +291,8 @@ export function initChat({ show, back }) {
     burstTimer = setTimeout(() => {
       burstTimer = 0;
       if (!ready) return;
+      if (statusOf(unit, new Date()) === "offline") return; // 睡着的人不补话
+      noteReply(unit, new Date()); // 想开口先升 active：状态和消息保持一致
       send({ realtimeInput: { text: " " } });
       showTyping();
     }, 2000 + Math.random() * 6000);
@@ -547,8 +541,8 @@ export function initChat({ show, back }) {
 
     show?.();
     scrollDown(true);
-    // 半分钟一轮：顶栏跟着作息变状态；睡着时不开场白，醒了再接话。
-    if (!statusTimer) statusTimer = setInterval(() => { maybeWake(); showStatus(); }, 30000);
+    // 半分钟一轮：顶栏跟着作息变状态。角色不主动开口，首轮回话等用户先说话。
+    if (!statusTimer) statusTimer = setInterval(showStatus, 30000);
     connect();
   }
 
@@ -571,7 +565,6 @@ export function initChat({ show, back }) {
     stopPlayback();
     if (ws) { try { ws.close(); } catch {} }
     ws = null;
-    wakeSent = false;
     playHead = 0;
 
     unit = null;
@@ -655,7 +648,6 @@ export function initChat({ show, back }) {
     burstArmed = 0;
     lastAiAt = 0;
     ws = null;
-    wakeSent = false;
     setReady(false);
     if (reviewCard) finishReview();
 
@@ -690,12 +682,9 @@ export function initChat({ show, back }) {
       return;
     }
 
-    // setupComplete 后发一个空格唤醒 AI。Gemini 不会自己开口。
-    // 醒来它先说本次话题的开场白，那就是聊天里的第一条消息。
-    // 这期间不流式出字，先摆 typing，等整轮结束再落气泡。
+    // setupComplete = 连接就绪，可以收发了。角色不抢话，等等用户的头一条。
     if (d.setupComplete) {
       setReady(true);
-      maybeWake(); // 空格开口交给状态判断：睡着的人此刻不说话
       return;
     }
 
