@@ -15,7 +15,6 @@ const STATUS = ["active", "away", "busy", "offline"];
 const BUSY_CHANCE = 0.35; // busy 收到消息抽中才回
 const STALE = 120000;     // 状态每两分钟重掷一次，旧签过期
 const WARM_LEAVE = 0.15;      // 话题正热时角色走开的概率
-const WARM_NOW = [0.3, 2];    // 秒回区间（秒）
 const WARM_AWAY = [45, 180];  // 走开多久（秒），回来再回
 
 // 状态缓存：id -> { anchor, state, at, until? }
@@ -126,7 +125,8 @@ export function nextReplyDelay(p, date = new Date(), warm = false) {
   if (st === "offline") return secondsToWake(p, date);
   if (st === "busy" && Math.random() > BUSY_CHANCE) return -1;
   if (warm) {
-    if (Math.random() >= WARM_LEAVE) return WARM_NOW[0] + Math.random() * (WARM_NOW[1] - WARM_NOW[0]);
+    // 话题正热也不秒回：照各人回复分布抽样，只是两连取小向左偏一点
+    if (Math.random() >= WARM_LEAVE) return Math.min(sampleReply(p), sampleReply(p));
     const [lo, hi] = WARM_AWAY;
     return lo + Math.random() * (hi - lo);
   }
