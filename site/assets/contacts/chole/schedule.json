@@ -1,0 +1,13 @@
+{
+  "_hint": "hours: 下标=小时0-23，值=active/away/busy/offline（按用户本地时钟）；base: active 档回复秒数区间；burst: [回复后主动补话概率, 最多补几轮]",
+  "base": [120, 480],
+  "burst": [0.15, 1],
+  "hours": [
+    "offline", "offline", "offline", "offline",
+    "offline", "offline", "active",  "active",
+    "active",  "away",    "away",    "away",
+    "busy",    "away",    "away",    "away",
+    "away",    "active",  "active",  "active",
+    "active",  "active",  "offline", "offline"
+  ]
+}

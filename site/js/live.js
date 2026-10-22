@@ -4,6 +4,7 @@
 // Worker 全程只签 token，不碰音频。
 
 import { loadContacts } from "./personas.js";
+import { statusOf, nextReplyDelay, burstOf } from "./rhythm.js";
 
 const WS_BASE =
   "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage." +
@@ -89,6 +90,14 @@ export function initChat({ show, back }) {
   let pendingMe = "";
   let typingEl = null;   // 「正在输入…」气泡
   let hist = [];         // 当前 Unit 的历史（内存 + localStorage 双写）
+
+  // 回复节奏：我方消息先排队，按 persona 作息抽样延迟到点才真发
+  let outQueue = [];     // 等待回复期间攒下的我方消息，到点一起发
+  let replyTimer = 0;    // 到点发送的定时器
+  let typingTimer = 0;   // 较长延迟里「临回前 5 秒」才摆 typing
+  let burstArmed = 0;    // 本条回复起角色还能补几轮
+  let burstTimer = 0;    // 补话定时器
+  let statusTimer = 0;   // 状态栏 / 苏醒检查的轮询
 
   // 挂断后的复盘
   let reviewCard = null;
@@ -191,6 +200,66 @@ export function initChat({ show, back }) {
       pushHist({ who: "ai", text: pendingAi });
       pendingAi = "";
     }
+  }
+
+  // ── 回复节奏（rhythm.js）──
+  // persona 像真人一样不秒回：发出后按作息抽样的延迟到点才真发给模型。
+  // 等回复期间连发的消息进队，到点一起回；typing 只在临回前出现；睡着的人
+  // 不回话，等他的「醒来小时」到了才开口。
+  const STATUS_LABEL = { active: "Active", away: "Away", busy: "Busy", offline: "Offline" };
+
+  // 顶栏默认文案 = persona 当前状态；typing / Connecting… 优先，不动它们。
+  function showStatus() {
+    if (!unit || !ready || typingEl) return;
+    setChatState(STATUS_LABEL[statusOf(unit, new Date())]);
+  }
+
+  // 空格唤醒 = 角色开口。离线的人不接话：不 wake，留在状态轮里等他醒。
+  function maybeWake() {
+    if (!ready || wakeSent || mode !== "text") return;
+    if (statusOf(unit, new Date()) === "offline") { setChatState("Offline"); return; }
+    wakeSent = true;
+    send({ realtimeInput: { text: " " } });
+    showTyping();
+  }
+
+  // 按作息抽一个延迟到点才发；较长的干等期间顶栏显示状态而非 typing。
+  function armReply() {
+    if (!unit) return;
+    const delay = nextReplyDelay(unit, new Date());
+    replyTimer = setTimeout(fireReply, delay * 1000);
+    if (delay > 5) {
+      typingTimer = setTimeout(() => {
+        typingTimer = 0;
+        if (replyTimer) showTyping(); // 临回前 5 秒才像真人一样「正在输入」
+      }, (delay - 5) * 1000);
+    } else {
+      showTyping();
+    }
+  }
+
+  function fireReply() {
+    replyTimer = 0;
+    if (typingTimer) { clearTimeout(typingTimer); typingTimer = 0; }
+    const texts = outQueue;
+    outQueue = [];
+    if (!ws || !texts.length) { showStatus(); return; } // 线已断，积压作废
+    burstArmed += burstOf(unit).extra; // 从这条回复起，话痨角色有概率接着说
+    for (const t of texts) send({ realtimeInput: { text: t } });
+    showTyping();
+  }
+
+  // 角色补话：回复落地后按「性格概率」隔几秒再送一个空格，让模型自己续一轮。
+  function examBurst() {
+    if (mode !== "text" || !unit || reviewCard || !burstArmed || burstTimer) return;
+    if (Math.random() >= burstOf(unit).chance) { burstArmed = 0; return; }
+    burstArmed--;
+    burstTimer = setTimeout(() => {
+      burstTimer = 0;
+      if (!ready) return;
+      send({ realtimeInput: { text: " " } });
+      showTyping();
+    }, 2000 + Math.random() * 6000);
   }
 
   // ── 历史（本地留存，下次打开还在） ──
@@ -436,6 +505,8 @@ export function initChat({ show, back }) {
 
     show?.();
     scrollDown(true);
+    // 半分钟一轮：顶栏跟着作息变状态；睡着时不开场白，醒了再接话。
+    if (!statusTimer) statusTimer = setInterval(() => { maybeWake(); showStatus(); }, 30000);
     connect();
   }
 
@@ -446,6 +517,12 @@ export function initChat({ show, back }) {
     connectSeq++; // 让还在等 token 的 connect 作废
     if (reviewIdle) { clearTimeout(reviewIdle); reviewIdle = null; }
     if (reviewCap) { clearTimeout(reviewCap); reviewCap = null; }
+    if (replyTimer) { clearTimeout(replyTimer); replyTimer = 0; }
+    if (typingTimer) { clearTimeout(typingTimer); typingTimer = 0; }
+    if (burstTimer) { clearTimeout(burstTimer); burstTimer = 0; }
+    if (statusTimer) { clearInterval(statusTimer); statusTimer = 0; }
+    outQueue = [];
+    burstArmed = 0;
     stopMic();
     stopPlayback();
     if (ws) { try { ws.close(); } catch {} }
@@ -525,6 +602,12 @@ export function initChat({ show, back }) {
     stopMic();
     stopPlayback();
     flushPending(); // 断线时攒着的话先落下来，别丢
+    // 掉线 = 时间线也停：没到点的回复和补话全部作废
+    if (replyTimer) { clearTimeout(replyTimer); replyTimer = 0; }
+    if (typingTimer) { clearTimeout(typingTimer); typingTimer = 0; }
+    if (burstTimer) { clearTimeout(burstTimer); burstTimer = 0; }
+    outQueue = [];
+    burstArmed = 0;
     ws = null;
     wakeSent = false;
     setReady(false);
@@ -551,11 +634,9 @@ export function initChat({ show, back }) {
     // setupComplete 后发一个空格唤醒 AI。Gemini 不会自己开口。
     // 醒来它先说本次话题的开场白，那就是聊天里的第一条消息。
     // 这期间不流式出字，先摆 typing，等整轮结束再落气泡。
-    if (d.setupComplete && !wakeSent) {
-      wakeSent = true;
+    if (d.setupComplete) {
       setReady(true);
-      send({ realtimeInput: { text: " " } });
-      showTyping();
+      maybeWake(); // 空格开口交给状态判断：睡着的人此刻不说话
       return;
     }
 
@@ -606,7 +687,8 @@ export function initChat({ show, back }) {
         if (reviewBuf.trim() && Date.now() - reviewArmedAt > 700) finishReview();
         return;
       }
-      setChatState("online");
+      showStatus();
+      examBurst();
       if (mode === "call") setCallState("On call");
     }
   }
@@ -631,7 +713,7 @@ export function initChat({ show, back }) {
     mode = "text";
     flushPending(); // 通话里说到一半的先落下来，别丢
     if (!ready) return;
-    setChatState("online");
+    showStatus();
     // 缓 700ms：挂断瞬间可能还有一轮在飞，别把它的尾巴当成复盘内容
     setTimeout(() => {
       if (ready && mode === "text" && !reviewCard) requestReview();
@@ -723,8 +805,13 @@ export function initChat({ show, back }) {
     sendBtn.disabled = true;
     addBubble("me", text);
     pushHist({ who: "me", text });
-    send({ realtimeInput: { text } });
-    showTyping(); // 后台慢慢算，界面上先给个「正在输入…」
+    if (mode === "call") {
+      send({ realtimeInput: { text } }); // 通话里打字不过节奏，照旧直发
+      return;
+    }
+    outQueue.push(text);     // 文字模式：先排队，Personas 按作息到点才回
+    if (replyTimer) return; // 已在等回复：排队等一起回，不清节奏
+    armReply();
   });
 
   return {

@@ -13,6 +13,11 @@ async function fetchText(url) {
   return res.ok ? res.text() : "";
 }
 
+// 作息表（schedule.json）。缺文件返回 null，节奏模块自己降级。
+async function fetchJson(url) {
+  try { return JSON.parse(await fetchText(url)); } catch { return null; }
+}
+
 // 全站就这一个解析器：只认「key: value」行和 `when — text` 行，别加语法。
 function parseProfile(md) {
   const out = {};
@@ -48,6 +53,7 @@ export async function loadContacts() {
     p.id = `persona-${id}`;
     p.avatar = p.avatar || `${dir}avatar.png`;
     p.moments = parseMoments(await fetchText(dir + "moments.md"));
+    p.schedule = await fetchJson(dir + "schedule.json");
     people.push(p);
   }
   return people;
