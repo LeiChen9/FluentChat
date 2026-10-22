@@ -779,9 +779,11 @@ export function initChat({ show, back }) {
       return;
     }
 
-    // setupComplete = 连接就绪，可以收发了。角色不抢话，等等用户的头一条。
+    // setupComplete = 连接就绪。角色不抢话，顶栏状态立刻刷出来，
+    // 别让「Connecting…」挂到下一轮轮询才像活人。
     if (d.setupComplete) {
       setReady(true);
+      showStatus();
       return;
     }
 
