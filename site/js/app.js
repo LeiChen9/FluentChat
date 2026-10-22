@@ -42,7 +42,9 @@ const chat = initChat({
 leaveChat = () => chat.close();
 
 // ── 联系人页 + 朋友圈：read 自 contacts 数据目录，代码只做渲染 ──
+let findPersona = null;
 loadContacts().then((people) => {
+  findPersona = (unit) => people.find((p) => p.id === unit) || null;
   const contactList = document.getElementById("contact-list");
   for (const p of people) {
     const li = document.createElement("li");
@@ -115,14 +117,27 @@ async function enablePush() {
     if (!res.ok) throw new Error(`pubkey ${res.status} ${(await res.text()).slice(0, 120)}`);
     const key = await res.text();
     setNote("Subscribing…");
-    const sub = await reg.pushManager.subscribe({
-      userVisibleOnly: true,
-      applicationServerKey: Uint8Array.from(atob((key + "=".repeat(4 - (key.length % 4) % 4)).replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0)),
-    });
+    const applicationServerKey = Uint8Array.from(
+      atob((key + "=".repeat(4 - (key.length % 4) % 4)).replace(/-/g, "+").replace(/_/g, "/")),
+      (c) => c.charCodeAt(0),
+    );
+    let sub = await reg.pushManager.getSubscription();
+    if (sub) {
+      const currentKey = sub.options.applicationServerKey;
+      const sameKey = currentKey && new Uint8Array(currentKey).every(
+        (byte, i) => byte === applicationServerKey[i],
+      ) && currentKey.byteLength === applicationServerKey.byteLength;
+      if (!sameKey) {
+        await sub.unsubscribe();
+        sub = null;
+      }
+    }
+    if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey });
     // Safari 某些版本 sub.toJSON() 缺失/返回 undefined，显式 stringify + 手工兜底
     const b64u = (ab) => btoa(String.fromCharCode(...new Uint8Array(ab))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-    const subJson = (sub.toJSON && Object.keys(sub.toJSON()).length)
-      ? sub.toJSON()
+    const json = sub.toJSON?.();
+    const subJson = (json && Object.keys(json).length)
+      ? json
       : { endpoint: sub.endpoint, keys: { p256dh: b64u(sub.getKey("p256dh")), auth: b64u(sub.getKey("auth")) } };
     setNote("Registering with server…");
     res = await fetch("/push/subscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(subJson) });
@@ -130,7 +145,7 @@ async function enablePush() {
       const raw = await res.text();
       throw new Error(`subscribe ${res.status} ${raw.replace(/<[^>]*>/g, "").slice(0, 200)}`);
     }
-    setNote("On — synced with server, expect test push soon");
+    setNote("On — synced with server");
   } catch (e) {
     setNote("Something failed — see details below");
     setErr(`[${new Date().toLocaleTimeString()}] ${e.message}`);
@@ -141,10 +156,6 @@ async function enablePush() {
 
 pushBtn.addEventListener("click", enablePush);
 // 点击通知后把对应聊天顶上来（sw.js 的 notificationclick postMessage）
-let findPersona = null;
-loadContacts().then((people) => {
-  findPersona = (unit) => people.find((p) => p.id === unit) || null;
-});
 navigator.serviceWorker?.addEventListener("message", (e) => {
   if (e.data?.kind === "open-chat" && e.data.unit) {
     const p = findPersona && findPersona(e.data.unit);

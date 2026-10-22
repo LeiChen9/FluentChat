@@ -40,6 +40,16 @@
 - **模型 `gemini-3.8-live`**。已实测可拿到 `setupComplete`，虽然它不出现在
   `/v1beta/models` 列表里（该列表不返回任何 live/native-audio 模型，别用它选型）。
 
+## Web Push（iOS 主屏幕 Web App）
+
+- 用户需在 iOS 16.4+ 的 Safari 中分享网站并选择“添加到主屏幕”，再从主屏幕打开 Web App 并主动授权通知；普通 Safari 标签页不支持此推送流程。
+- 前端用 `/push/pubkey` 创建订阅，并将订阅登记到 `/push/subscribe`；Python Worker 将订阅存入 KV。
+- 发送链：Python Worker → `PUSHER` Service Binding → `fluentchat-pusher` JS Worker → `web-push` 库 → Apple Push Notification service。
+- VAPID 公私钥只配置在 pusher Worker；主 Worker 仅提供前端需要的 VAPID 公钥。服务端不公开测试发送或诊断接口。
+- `site/sw.js` 的 `push` 事件调用 `showNotification()` 显示系统通知；点击通知后聚焦 Web App 并尝试打开对应 persona 聊天。
+- 已在 iPhone 主屏幕 Web App 完成真实推送验证，锁屏状态可收到横幅。前台呈现和图标角标受 iOS 行为/API 支持限制，不等同于原生 LINE/WhatsApp。
+- 后台定时主动消息和聊天记录同步尚未实现；当前订阅/发送底座本身不会自动触发通知，需后续定义服务端数据与调度。
+
 ## 已验证的协议细节
 
 踩过的坑，改代码前先看这一节。

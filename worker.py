@@ -10,10 +10,8 @@
 """
 
 import asyncio
-import base64
 import hashlib
 import json
-import time
 from workers import Response, WorkerEntrypoint, fetch as js_fetch
 
 # Gemini 接口地址
@@ -186,142 +184,32 @@ def read_prompt(name: str) -> str:
     return PROMPTS[name.removesuffix(".md")]
 
 
-# ── Web Push（VAPID ES256 + RFC8291 aes128gcm）────────────────────────────
-# Python Worker 没有 ssl/cryptography 包，签名和加密全部经 Pyodide FFI 调
-# WebCrypto（runtime 里的 crypto.subtle 原生实现，快且无依赖）。三个入口：
-#   GET  /push/pubkey     → applicationServerKey（前端 subscribe 用）
-#   POST /push/subscribe  → 存订阅端点进 KV（单键列表，设备数少不拆键）
-#   POST /push/notify     → 手动测试：{unit?, text} 群发所有订阅端点
-# 切片 2 再加 scheduled()：按 persona 窗口/engagement 生成消息推送。
-
-from js import crypto, TextEncoder, Object as JsObject, Uint8Array
-from pyodide.ffi import to_js as _raw_to_js
-
-VAPID_SUB = "mailto:chenlei9691@gmail.com"  # VAPID 要求的联系邮箱
-PUSH_TTL = 2419200  # 推送服务缓存 28 天
-RECORD_SIZE = 4096  # aes128gcm 单记录上限，开屏消息远用不满
+# ── Web Push ───────────────────────────────────────────────────────────────
+# The Python Worker stores subscriptions; the bound JS Worker owns VAPID and encryption.
 
 
-def to_macrodict(obj):
-    """Python dict → JS 对象（算法参数要的是 object，不是 Python dict）。"""
-    return _raw_to_js(obj, dict_converter=JsObject.fromEntries)
-
-
-def b64u_enc(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
-
-
-def b64u_dec(s: str) -> bytes:
-    return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
-
-
-async def subtle(op, *args) -> bytes:
-    """crypto.subtle.<op> 的 await 封装；返回值按 bytes 读。"""
-    return bytes(await getattr(crypto.subtle, op)(*args))
-
-
-def _hkdf_args(salt: bytes, info: bytes, length: int) -> tuple:
-    return to_macrodict({"name": "HKDF", "hash": "SHA-256", "salt": Uint8Array.new(salt), "info": Uint8Array.new(info)})
-
-
-async def _hkdf(salt: bytes, base_key, info: bytes, length: int) -> bytes:
-    """从 CryptoKey 出发做 HKDF-SHA256。"""
-    return bytes(await crypto.subtle.deriveBits(_hkdf_args(salt, info, length), base_key, length))
-
-
-def _vapid_jwk() -> dict:
-    """从 secret 组装 EC JWK：公钥是 65B 未压缩（0x04|X|Y），私钥是标量 d。"""
-    pub = b64u_dec(getattr(worker_env(), "VAPID_PUBLIC_KEY", "") or "")
-    priv = b64u_dec(getattr(worker_env(), "VAPID_PRIVATE_KEY", "") or "")
-    if len(pub) != 65 or pub[0] != 4 or len(priv) != 32:
-        raise ValueError("VAPID key 配置不完整")
-    return {"kty": "EC", "crv": "P-256", "x": b64u_enc(pub[1:33]), "y": b64u_enc(pub[33:65]), "d": b64u_enc(priv)}
-
-
-def worker_env():
-    """worker 挂进来的 env（fetch/scheduled 路径已 bind，离线脚本为 None）。"""
-    return _WORKER_ENV["env"]
-
-
-async def push_jwt(endpoint: str, pub_b64url: str) -> str:
-    """VAPID ES256 JWT：aud = 推送服务 origin（FCM / web.push.apple.com 各自对号）。"""
-    header = b64u_enc(json.dumps({"typ": "JWT", "alg": "ES256"}, separators=(",", ":")).encode())
-    claims = b64u_enc(json.dumps(
-        {"aud": endpoint.rsplit("/", 4)[0], "sub": VAPID_SUB, "exp": int(time.time()) + 12 * 3600},
-        separators=(",", ":")).encode())
-    key = await crypto.subtle.importKey(
-        "jwk", to_macrodict(_vapid_jwk()), to_macrodict({"name": "ECDSA", "namedCurve": "P-256"}), False, ["sign"])
-    sig = await subtle("sign", to_macrodict({"name": "ECDSA", "hash": "SHA-256"}), key, (header + "." + claims).encode())
-    return f"{header}.{claims}.{b64u_enc(sig)}"
-
-
-async def push_encrypt(payload: bytes, ua_pub: bytes, auth: bytes) -> bytes:
-    """RFC8291 aes128gcm：body = 22B 头(盐+rs+键长) + GCM 密文。"""
-    eph = await crypto.subtle.generateKey(
-        to_macrodict({"name": "ECDH", "namedCurve": "P-256"}), True, ["deriveBits"])
-    ua_key = await crypto.subtle.importKey(
-        "raw", Uint8Array.new(ua_pub), to_macrodict({"name": "ECDH", "namedCurve": "P-256"}), True, [])
-    shared = await crypto.subtle.deriveBits(
-        to_macrodict({"name": "ECDH", "public": ua_key}), eph.privateKey, 256)
-    shared = bytes(shared)
-    as_pub = bytes(await crypto.subtle.exportKey("raw", eph.publicKey))
-
-    ikm = await _hkdf(auth, await crypto.subtle.importKey(
-        "raw", Uint8Array.new(shared), to_macrodict({"name": "HKDF", "hash": "SHA-256"}), False, ["deriveBits"]),
-        b"WebPush: info\x00" + ua_pub + as_pub, 32)
-    salt = bytes(crypto.getRandomValues(Uint8Array.new(16)))
-    cek = await _hkdf(salt, await crypto.subtle.importKey(
-        "raw", Uint8Array.new(ikm), to_macrodict({"name": "HKDF", "hash": "SHA-256"}), False, ["deriveBits"]),
-        b"Content-Encoding: aes128gcm\x00", 16)
-    nonce = await _hkdf(salt, await crypto.subtle.importKey(
-        "raw", Uint8Array.new(ikm), to_macrodict({"name": "HKDF", "hash": "SHA-256"}), False, ["deriveBits"]),
-        b"Content-Encoding: nonce\x00", 12)
-
-    rs = RECORD_SIZE.to_bytes(4, "big")
-    header = salt + rs + bytes([len(as_pub)]) + as_pub
-    aad = header + b"\x02\x00\x00"
-    cipher = await gasm(cek, nonce, payload + b"\x02", aad)
-    return header + cipher
-
-
-async def gasm(key_raw: bytes, nonce: bytes, plain: bytes, aad: bytes) -> bytes:
-    """AES-128-GCM 加密一条记录（key/nonce 按原始字节引入）。"""
-    key = await crypto.subtle.importKey(
-        "raw", Uint8Array.new(key_raw), to_macrodict({"name": "AES-GCM"}), False, ["encrypt"])
-    return bytes(await crypto.subtle.encrypt(
-        to_macrodict({"name": "AES-GCM", "iv": Uint8Array.new(nonce), "tagLength": 128,
-                      "additionalData": Uint8Array.new(aad)}),
-        key, Uint8Array.new(plain)))
-
-
-async def push_send(sub: dict, title: str, text: str, unit: str) -> str:
-    """给单个订阅端点发 aes128gcm 推送；返回 'ok' 或失败原因（410/404 会顺删）。"""
-    endpoint = sub.get("endpoint") or ""
-    keys = sub.get("keys") or {}
-    pub_b64url = getattr(worker_env(), "VAPID_PUBLIC_KEY", "")
+async def push_send(env, sub: dict, title: str, text: str, unit: str) -> str:
+    """通过 JS pusher 发推送；返回 'ok' 或失败原因（410/404 会顺删）。"""
     try:
-        payload = json.dumps({"title": title, "body": text, "unit": unit}, separators=(",", ":")).encode()
-        body = await push_encrypt(payload, b64u_dec(keys["p256dh"]), b64u_dec(keys["auth"]))
-        jwt = await push_jwt(endpoint, pub_b64url)
-        resp = await js_fetch(endpoint, method="POST", headers={
-            "Authorization": f"vapid t={jwt} k={pub_b64url}",
-            "TTL": str(PUSH_TTL),
-            "Urgency": "normal",
-            "Content-Type": "application/octet-stream",
-            "Content-Encoding": "aes128gcm",
-        }, body=Uint8Array.new(body))
-        status = resp.status
+        resp = await env.PUSHER.fetch(
+            "https://pusher.internal/send", method="POST",
+            headers={"Content-Type": "application/json"},
+            body=json.dumps({"subscription": sub, "payload": {
+                "title": title, "body": text, "unit": unit,
+            }}))
+        result = await resp.json()
+        status = result.get("statusCode", resp.status)
         if status in (404, 410):
             return "expired"  # 订阅失效，调用方清掉
-        if status in (200, 201):
+        if resp.status == 200 and status in (200, 201):
             return "ok"
-        return f"HTTP {status}"
+        return f"HTTP {status}: {result.get('error', 'pusher failed')[:150]}"
     except Exception as e:
         return f"{type(e).__name__}: {str(e)[:120]}"
 
 
-def vapid_pubkey() -> str:
-    return getattr(worker_env(), "VAPID_PUBLIC_KEY", "") or ""
+def vapid_pubkey(env) -> str:
+    return getattr(env, "VAPID_PUBLIC_KEY", "") or ""
 
 
 SUBS_KEY = "subs"
@@ -446,17 +334,13 @@ def build_token_payload(
 
 
 class Default(WorkerEntrypoint):
-    # 切片 2 再实现：按 persona 窗口/engagement 定时生成并推送。现在只是个桩，
-    # 先让 cron 跑起来不打错（wrangler.jsonc 的 crons 加进来后每分钟会撞它）。
-    async def scheduled(self, controller, env, ctx):
-        return
-
     async def fetch(self, request):
         # 先绑定 env，链上取 key 全靠它
         bind_worker_env(self.env)
+        path = str(request.url).split("?", 1)[0]
 
         # 健康检查：顺便确认部署成功、secret 已设
-        if request.method == "GET" and request.url.endswith("/health"):
+        if request.method == "GET" and path.endswith("/health"):
             has = sum(bool(_env_key(ep["env"])) for ep in ENDPOINTS.values())
             return Response.json({
                 "ok": True,
@@ -468,7 +352,7 @@ class Default(WorkerEntrypoint):
             })
 
         # 文字对话：persona 聊天走模型容灾链（非流式）。/history 语义同 /token。
-        if request.method == "POST" and request.url.endswith("/chat"):
+        if request.method == "POST" and path.endswith("/chat"):
             try:
                 body = await request.json()
             except Exception:
@@ -494,32 +378,15 @@ class Default(WorkerEntrypoint):
                      "detail": str(e)[:300]}, status=500)
             return Response.json(out)
 
-        # ── Web Push：公钥 / 订阅登记 / 手动测试推送 ──
-        if request.method == "GET" and request.url.endswith("/push/debug"):
-            sub_ = getattr(self.env, "SUBS", None)
-            if sub_ is None:
-                return Response.json({"binding": None})
-            hit = await sub_.get("last-subscribe-hit")
-            ok = await sub_.get("last-subscribe-ok")
-            err = await sub_.get("last-subscribe-err")
-            raw = await sub_.get("subs")
-            return Response.json({
-                "binding": str(type(sub_)),
-                "hit": hit, "ok": ok, "err": err,
-                "subs": len(json.loads(raw)) if raw else 0,
-                "raw_subs": (raw or "")[:300],
-            })
-
-        if request.method == "GET" and request.url.endswith("/push/pubkey"):
-            key = vapid_pubkey()
+        # ── Web Push：公钥 / 订阅登记 ──
+        if request.method == "GET" and path.endswith("/push/pubkey"):
+            key = vapid_pubkey(self.env)
             if not key:
                 return Response.json({"error": "服务端没配 VAPID_PUBLIC_KEY"}, status=500)
             return Response(key, headers={"Content-Type": "text/plain"})
 
-        if request.method == "POST" and request.url.endswith("/push/subscribe"):
+        if request.method == "POST" and path.endswith("/push/subscribe"):
             try:
-                # 调试钉子：谁进来先在 KV 里留个时间戳
-                await self.env.SUBS.put("last-subscribe-hit", str(int(time.time() * 1000)))
                 body = await request.json()
                 endpoint = str(body.get("endpoint") or "")
                 keys = body.get("keys") or {}
@@ -530,32 +397,14 @@ class Default(WorkerEntrypoint):
                 subs = [dict(s) for s in await _load_subs(self.env) if s.get("endpoint") != endpoint][:19]
                 subs.append({"endpoint": endpoint, "keys": {"p256dh": dh, "auth": au}})
                 await _save_subs(self.env, subs)
-                await self.env.SUBS.put("last-subscribe-ok", f"{int(time.time() * 1000)} n={len(subs)} {endpoint[:50]}")
                 return Response.json({"ok": True, "count": len(subs)})
             except Exception as exc:
-                try:
-                    await self.env.SUBS.put("last-subscribe-err", f"{int(time.time() * 1000)} {type(exc).__name__}: {exc}")
-                except Exception:
-                    pass
                 return Response.json({"error": f"subscribe 异常: {type(exc).__name__}: {exc}"}, status=500)
 
-        if request.method == "POST" and request.url.endswith("/push/notify"):
-            try:
-                try:
-                    body = await request.json()
-                except Exception:
-                    body = {}
-                unit = str(body.get("unit") or "")
-                text = str(body.get("text") or "Test push 🔔")[:200]
-                title = {"persona-leo": "Leo", "persona-chole": "Chole", "persona-sam": "Sam"}.get(unit, "FluentChat")
-                subs = await _load_subs(self.env)
-                results = [await push_send(s, title, text, unit) for s in subs]
-                alive = [s for s, r in zip(subs, results) if r != "expired"]
-                if alive != subs:
-                    await _save_subs(self.env, alive)
-                return Response.json({"ok": True, "sent": results.count("ok"), "detail": results})
-            except Exception as exc:
-                return Response.json({"error": f"notify 异常: {type(exc).__name__}: {exc}"}, status=500)
+        # run_worker_first 打开后，所有请求都先过 Python：
+        # 静态文件（/、css、fires 等）必须在这里代发，否则前端会 404。
+        if request.method in ("GET", "HEAD"):
+            return await self.env.ASSETS.fetch(request)
 
         if request.method != "POST":
             return Response.json({"error": "用 POST"}, status=405)
@@ -644,7 +493,6 @@ PROMPTS = {
     "personas": '# AI Friends — Persona Profiles (3 contacts)\n\nGoal: the three "friends" in the Chats tab. All face **Chinese beginners of English**: they chat casually, message proactively, and carry light interaction (the P0–P3 feedback principles still apply). They do NOT run Unit training — teaching stays with the Unit prompts, and Units and personas are kept separate for now.\n\nDesign constraints:\n- The user is a beginner: short sentences, one question at a time, deliberate control of pace and vocabulary.\n- Each has a fixed "message rhythm"; the future background push scheduler generates messages following it.\n- Voices use Gemini Live `prebuiltVoiceConfig.voiceName` (official 30-voice list, shared with TTS); the worker maps per persona.\n\nPer-persona content (status line, chat preview, moments) lives in `site/assets/contacts/<id>/contact.json` + `moments.md` — the code only reads and renders it. Add a new person = a new folder there + `prompts/personas/persona-<id>.md` + one whitelist line in `worker.py`.\n\n## Voice cheat sheet\n\n| Persona | voiceName | Style | Gender |\n| --- | --- | --- | --- |\n| Leo | Puck | Upbeat | Male |\n| Chole | Leda | Youthful | Female |\n| Sam | Umbriel | Easy-going | Male |\n\n## Leo · 26 · Portland, US · Coffee-truck cashier\n\n**Bio**: grew up in Seattle, moved states with the food truck, settled in Portland. A chatterbox who treats every customer as a friend; feels sick if he can\'t talk all day. Obsessed with saving up for a trip to Asia — to eat his way down one street. Not rich, but happy; classic American optimism.\n\n**Personality**: loud, sharing, self-deprecating (coffee spills, miscounts). Never rains on anyone: every opener is "wow, that\'s awesome".\n\n**Speaking style** (for the prompt):\n- Extremely short sentences, one or two per turn; casual filler is fine: gonna / kinda / awesome / no way\n- Fast pace and high energy; no long compound sentences\n- Never corrects — revoices what he understood, asks about what he missed\n- Occasionally learned one clumsy Chinese phrase to bond\n\n**Topic pool**: coffee / food, what you did today, weekend plans, hobbies (games / movies / music)\n\n**Message rhythm**: high frequency. Mon/Wed/Fri, 3–4 scattered messages across the day, posts whenever something happens, heavy on emoji and interjections.\n\n## Chole · 24 · Manchester, UK · Florist\n\n**Bio**: Manchester local, runs the flower shop her grandma left her. Quiet, tidy, keeps a little notebook: weather, the windowsill flowers, customers\' catchphrases. Lives alone with a cat (Miso). Believes joy is collected in small pieces; teases softly and never lets it sting.\n\n**Personality**: gentle, observant listener; loves small details; no pressure, exactly one small question per message. Deadpan British humor that sneaks a laugh out of you.\n\n**Speaking style** (for the prompt):\n- Each message: one small observation + one simple question, never more\n- Clean sentences, the slowest pace, beginner-level vocabulary\n- One Britishism at a time: lovely / brilliant / cuppa / cheeky — glossed for a beginner\n- Never corrects; when the user is stuck, offers one super-simple example sentence to copy\n\n**Topic pool**: home / where you live, how today went, food, Miso the cat\'s daily life\n\n**Message rhythm**: low frequency. One message a day, around 8pm — like a brief goodnight report.\n\n## Sam · 52 · Toronto, Canada · Retired corporate admin\n\n**Bio**: thirty years of admin at an insurance company, mentored dozens of juniors. Semi-retired now, hooked on fishing and on teaching young people he meets in elevators. Speaks unhurried, fond of "back in my day…" stories. His wife is Chinese-American, so he knows a few Chinese phrases and is genuinely curious about Chinese workplace life.\n\n**Personality**: steady, easy-to-talk-to elder mentor; warm but never verbose; praise is specific (about what you did, never empty "good job").\n\n**Speaking style** (for the prompt):\n- Steadiest pace, low grounded voice; complete but simple sentences (First / Then / Because as modeling)\n- Replaces teaching with real-life mini tasks: "Say today you wanted to take a day off — how would you ask your manager?" After the user answers, backchannel one or two sentences of review (P0–P1 only), no P3 grammar nitpicks\n- If the user doesn\'t follow, actively slows down and rephrases: "Let me say it another way"\n\n**Topic pool**: workplace simulations (day off, explaining how, recounting experience), everyday topics touching work (overtime, meetings, commuting)\n\n**Message rhythm**: low-medium. Two messages a week, Tuesday/Friday mornings: one task or one chunk of news, slightly heavier in weight.',
 }
 # ---- END 内联 prompt ----
-
 
 
 

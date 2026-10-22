@@ -2,7 +2,7 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "fluentchat-api",
   "main": "worker.py",
-  "compatibility_date": "2026-10-02",
+  "compatibility_date": "2026-08-01",
   "compatibility_flags": ["python_workers"],
 
   // 前端由 Worker 一起发，这样页面和 /token 同源，不需要 CORS，
@@ -11,12 +11,17 @@
   "assets": {
     "directory": "./site",
     "binding": "ASSETS",
-    "not_found_handling": "single-page-application"
+    "not_found_handling": "single-page-application",
+    "run_worker_first": true
   },
 
   // KV：Web Push 订阅端点存这里，key=端点哈希，value=订阅 JSON
   "kv_namespaces": [
     { "binding": "SUBS", "id": "40f6ba9fc2bc41d98c503f65479d4076" }
+  ],
+
+  "services": [
+    { "binding": "PUSHER", "service": "fluentchat-pusher" }
   ],
 
   // 让 .md 进包。它们会以 JS text 模块形式存在，Python 的 open() 读不到，

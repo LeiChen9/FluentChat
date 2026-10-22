@@ -1,0 +1,8 @@
+{
+  "name": "fluentchat-pusher",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "web-push": "^3.6.7"
+  }
+}
