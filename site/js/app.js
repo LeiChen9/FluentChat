@@ -83,7 +83,13 @@ for (const tab of tabs) {
 // iOS 备注：16.4+ 要求先「添加到主屏幕」再授权，普通标签页里 requestPermission 不给弹。
 const pushBtn = document.getElementById("push-enable");
 const pushNote = document.getElementById("push-note");
+const pushErr = document.getElementById("push-err");
 const setNote = (t) => { pushNote.textContent = t; };
+const setErr = (t) => {
+  if (!t) { pushErr.hidden = true; return; }
+  pushErr.hidden = false;
+  pushErr.textContent = t;
+};
 
 function initPushUI() {
   if (!("serviceWorker" in navigator) || !("PushManager" in window)) { setNote("Push not supported here"); pushBtn.disabled = true; return; }
@@ -91,27 +97,43 @@ function initPushUI() {
   const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
   if (isIOS && !standalone) { setNote("Add to Home Screen first, then come back"); pushBtn.disabled = true; return; }
   navigator.serviceWorker.register("sw.js").then((reg) => reg.pushManager.getSubscription()).then((sub) => {
-    if (sub) setNote("On — good luck out there");
-    // 默认文案保留，由用户按下按钮来真开
+    if (sub) setNote("Subscribed before — tap to re-sync with server");
+    // 无订阅时默认文案保留，由用户按下按钮来真开
   }).catch(() => setNote("Push not supported here"));
 }
 
 async function enablePush() {
   pushBtn.disabled = true;
+  setErr("");
   try {
+    setNote("Checking permission…");
     const reg = await navigator.serviceWorker.register("sw.js");
     const perm = await Notification.requestPermission();
     if (perm !== "granted") { setNote(perm === "denied" ? "Blocked — enable in Settings" : "Not yet — tap again"); return; }
-    const key = await (await fetch("/push/pubkey")).text();
+    setNote("Getting server key…");
+    let res = await fetch("/push/pubkey");
+    if (!res.ok) throw new Error(`pubkey ${res.status} ${(await res.text()).slice(0, 120)}`);
+    const key = await res.text();
+    setNote("Subscribing…");
     const sub = await reg.pushManager.subscribe({
       userVisibleOnly: true,
       applicationServerKey: Uint8Array.from(atob((key + "=".repeat(4 - (key.length % 4) % 4)).replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0)),
     });
-    const res = await fetch("/push/subscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: sub.toJSON() });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    setNote("On — good luck out there");
+    // Safari 某些版本 sub.toJSON() 缺失/返回 undefined，显式 stringify + 手工兜底
+    const b64u = (ab) => btoa(String.fromCharCode(...new Uint8Array(ab))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    const subJson = (sub.toJSON && Object.keys(sub.toJSON()).length)
+      ? sub.toJSON()
+      : { endpoint: sub.endpoint, keys: { p256dh: b64u(sub.getKey("p256dh")), auth: b64u(sub.getKey("auth")) } };
+    setNote("Registering with server…");
+    res = await fetch("/push/subscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(subJson) });
+    if (!res.ok) {
+      const raw = await res.text();
+      throw new Error(`subscribe ${res.status} ${raw.replace(/<[^>]*>/g, "").slice(0, 200)}`);
+    }
+    setNote("On — synced with server, expect test push soon");
   } catch (e) {
-    setNote(`Failed: ${e.message}`);
+    setNote("Something failed — see details below");
+    setErr(`[${new Date().toLocaleTimeString()}] ${e.message}`);
   } finally {
     pushBtn.disabled = false;
   }

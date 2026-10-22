@@ -495,6 +495,21 @@ class Default(WorkerEntrypoint):
             return Response.json(out)
 
         # ── Web Push：公钥 / 订阅登记 / 手动测试推送 ──
+        if request.method == "GET" and request.url.endswith("/push/debug"):
+            sub_ = getattr(self.env, "SUBS", None)
+            if sub_ is None:
+                return Response.json({"binding": None})
+            hit = await sub_.get("last-subscribe-hit")
+            ok = await sub_.get("last-subscribe-ok")
+            err = await sub_.get("last-subscribe-err")
+            raw = await sub_.get("subs")
+            return Response.json({
+                "binding": str(type(sub_)),
+                "hit": hit, "ok": ok, "err": err,
+                "subs": len(json.loads(raw)) if raw else 0,
+                "raw_subs": (raw or "")[:300],
+            })
+
         if request.method == "GET" and request.url.endswith("/push/pubkey"):
             key = vapid_pubkey()
             if not key:
@@ -503,32 +518,44 @@ class Default(WorkerEntrypoint):
 
         if request.method == "POST" and request.url.endswith("/push/subscribe"):
             try:
+                # 调试钉子：谁进来先在 KV 里留个时间戳
+                await self.env.SUBS.put("last-subscribe-hit", str(int(time.time() * 1000)))
                 body = await request.json()
-            except Exception:
-                return Response.json({"error": "请求体不是合法 JSON"}, status=400)
-            endpoint = str(body.get("endpoint") or "")
-            keys = body.get("keys") or {}
-            if not endpoint.startswith("https://") or "p256dh" not in keys or "auth" not in keys:
-                return Response.json({"error": "订阅缺 endpoint/keys(p256dh,auth)"}, status=400)
-            subs = [s for s in _load_subs(self.env) if s.get("endpoint") != endpoint][:19]
-            subs.append({"endpoint": endpoint, "keys": {"p256dh": keys["p256dh"], "auth": keys["auth"]}})
-            await _save_subs(self.env, subs)
-            return Response.json({"ok": True, "count": len(subs)})
+                endpoint = str(body.get("endpoint") or "")
+                keys = body.get("keys") or {}
+                dh = str(keys.get("p256dh") or "")
+                au = str(keys.get("auth") or "")
+                if not endpoint.startswith("https://") or not dh or not au:
+                    return Response.json({"error": "订阅缺 endpoint/keys(p256dh,auth)"}, status=400)
+                subs = [dict(s) for s in await _load_subs(self.env) if s.get("endpoint") != endpoint][:19]
+                subs.append({"endpoint": endpoint, "keys": {"p256dh": dh, "auth": au}})
+                await _save_subs(self.env, subs)
+                await self.env.SUBS.put("last-subscribe-ok", f"{int(time.time() * 1000)} n={len(subs)} {endpoint[:50]}")
+                return Response.json({"ok": True, "count": len(subs)})
+            except Exception as exc:
+                try:
+                    await self.env.SUBS.put("last-subscribe-err", f"{int(time.time() * 1000)} {type(exc).__name__}: {exc}")
+                except Exception:
+                    pass
+                return Response.json({"error": f"subscribe 异常: {type(exc).__name__}: {exc}"}, status=500)
 
         if request.method == "POST" and request.url.endswith("/push/notify"):
             try:
-                body = await request.json()
-            except Exception:
-                body = {}
-            unit = str(body.get("unit") or "")
-            text = str(body.get("text") or "Test push 🔔")[:200]
-            title = {"persona-leo": "Leo", "persona-chole": "Chole", "persona-sam": "Sam"}.get(unit, "FluentChat")
-            subs = _load_subs(self.env)
-            results = [await push_send(s, title, text, unit) for s in subs]
-            alive = [s for s, r in zip(subs, results) if r != "expired"]
-            if alive != subs:
-                await _save_subs(self.env, alive)
-            return Response.json({"ok": True, "sent": results.count("ok"), "detail": results})
+                try:
+                    body = await request.json()
+                except Exception:
+                    body = {}
+                unit = str(body.get("unit") or "")
+                text = str(body.get("text") or "Test push 🔔")[:200]
+                title = {"persona-leo": "Leo", "persona-chole": "Chole", "persona-sam": "Sam"}.get(unit, "FluentChat")
+                subs = await _load_subs(self.env)
+                results = [await push_send(s, title, text, unit) for s in subs]
+                alive = [s for s, r in zip(subs, results) if r != "expired"]
+                if alive != subs:
+                    await _save_subs(self.env, alive)
+                return Response.json({"ok": True, "sent": results.count("ok"), "detail": results})
+            except Exception as exc:
+                return Response.json({"error": f"notify 异常: {type(exc).__name__}: {exc}"}, status=500)
 
         if request.method != "POST":
             return Response.json({"error": "用 POST"}, status=405)

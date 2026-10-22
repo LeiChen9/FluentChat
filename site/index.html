@@ -103,15 +103,27 @@
     <section class="view view--center" id="view-me" hidden>
       <header class="page-head">
         <h1 class="page-title">Me</h1>
-        <p class="page-sub">Settings &amp; notifications</p>
+        <p class="page-sub">Profile &amp; notifications</p>
       </header>
       <ul class="row-list">
         <li>
           <button class="row" id="push-enable" type="button">
+            <span class="row__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="26" height="26" fill="none">
+                <path d="M12 3.5c-3 0-4.9 2.2-4.9 5v3.2c0 .6-.2 1.2-.6 1.7l-.8 1.1c-.6.8 0 2 .9 2h10.8c1 0 1.5-1.2.9-2l-.8-1.1c-.4-.5-.6-1.1-.6-1.7V8.5c0-2.8-1.9-5-4.9-5Z" fill="currentColor"/>
+                <path d="M10 18.6a2.1 2.1 0 0 0 4 0" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+              </svg>
+            </span>
             <span class="row__text"><b>Notifications</b><i id="push-note">Off — tap to enable lock-screen push</i></span>
+            <svg class="row__chev" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M9.5 5.5 16 12l-6.5 6.5" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
           </button>
         </li>
       </ul>
+      <div class="me-block">
+        <pre class="me-err" id="push-err" hidden></pre>
+      </div>
     </section>
 
   </main>
