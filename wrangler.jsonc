@@ -14,6 +14,11 @@
     "not_found_handling": "single-page-application"
   },
 
+  // KV：Web Push 订阅端点存这里，key=端点哈希，value=订阅 JSON
+  "kv_namespaces": [
+    { "binding": "SUBS", "id": "40f6ba9fc2bc41d98c503f65479d4076" }
+  ],
+
   // 让 .md 进包。它们会以 JS text 模块形式存在，Python 的 open() 读不到，
   // 所以 prompt 实际用的是 worker.py 里内联的那份（tools/gen_prompts.py 生成）。
   "rules": [

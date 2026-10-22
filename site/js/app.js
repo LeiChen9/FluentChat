@@ -1,6 +1,5 @@
 import { initChat } from "./live.js";
 import { loadContacts } from "./personas.js";
-
 // 四个主 tab + 一个对话子页（对应 line/whatsapp 首层导航）。
 const VIEWS = ["chats", "contacts", "moments", "me", "chat"];
 
@@ -79,3 +78,56 @@ loadContacts().then((people) => {
 for (const tab of tabs) {
   tab.addEventListener("click", () => showView(tab.dataset.view));
 }
+
+// ── Web Push 订阅（Me 页按钮）：注册 SW → 授权 → 拿公钥 → 订阅登记 ──
+// iOS 备注：16.4+ 要求先「添加到主屏幕」再授权，普通标签页里 requestPermission 不给弹。
+const pushBtn = document.getElementById("push-enable");
+const pushNote = document.getElementById("push-note");
+const setNote = (t) => { pushNote.textContent = t; };
+
+function initPushUI() {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) { setNote("Push not supported here"); pushBtn.disabled = true; return; }
+  const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+  if (isIOS && !standalone) { setNote("Add to Home Screen first, then come back"); pushBtn.disabled = true; return; }
+  navigator.serviceWorker.register("sw.js").then((reg) => reg.pushManager.getSubscription()).then((sub) => {
+    if (sub) setNote("On — good luck out there");
+    // 默认文案保留，由用户按下按钮来真开
+  }).catch(() => setNote("Push not supported here"));
+}
+
+async function enablePush() {
+  pushBtn.disabled = true;
+  try {
+    const reg = await navigator.serviceWorker.register("sw.js");
+    const perm = await Notification.requestPermission();
+    if (perm !== "granted") { setNote(perm === "denied" ? "Blocked — enable in Settings" : "Not yet — tap again"); return; }
+    const key = await (await fetch("/push/pubkey")).text();
+    const sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: Uint8Array.from(atob((key + "=".repeat(4 - (key.length % 4) % 4)).replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0)),
+    });
+    const res = await fetch("/push/subscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: sub.toJSON() });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    setNote("On — good luck out there");
+  } catch (e) {
+    setNote(`Failed: ${e.message}`);
+  } finally {
+    pushBtn.disabled = false;
+  }
+}
+
+pushBtn.addEventListener("click", enablePush);
+// 点击通知后把对应聊天顶上来（sw.js 的 notificationclick postMessage）
+let findPersona = null;
+loadContacts().then((people) => {
+  findPersona = (unit) => people.find((p) => p.id === unit) || null;
+});
+navigator.serviceWorker?.addEventListener("message", (e) => {
+  if (e.data?.kind === "open-chat" && e.data.unit) {
+    const p = findPersona && findPersona(e.data.unit);
+    if (p) chat.open(p);
+  }
+});
+
+initPushUI();

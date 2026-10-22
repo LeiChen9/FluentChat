@@ -10,7 +10,10 @@
 """
 
 import asyncio
+import base64
+import hashlib
 import json
+import time
 from workers import Response, WorkerEntrypoint, fetch as js_fetch
 
 # Gemini 接口地址
@@ -183,6 +186,161 @@ def read_prompt(name: str) -> str:
     return PROMPTS[name.removesuffix(".md")]
 
 
+# ── Web Push（VAPID ES256 + RFC8291 aes128gcm）────────────────────────────
+# Python Worker 没有 ssl/cryptography 包，签名和加密全部经 Pyodide FFI 调
+# WebCrypto（runtime 里的 crypto.subtle 原生实现，快且无依赖）。三个入口：
+#   GET  /push/pubkey     → applicationServerKey（前端 subscribe 用）
+#   POST /push/subscribe  → 存订阅端点进 KV（单键列表，设备数少不拆键）
+#   POST /push/notify     → 手动测试：{unit?, text} 群发所有订阅端点
+# 切片 2 再加 scheduled()：按 persona 窗口/engagement 生成消息推送。
+
+from js import crypto, TextEncoder, Object as JsObject, Uint8Array
+from pyodide.ffi import to_js as _raw_to_js
+
+VAPID_SUB = "mailto:chenlei9691@gmail.com"  # VAPID 要求的联系邮箱
+PUSH_TTL = 2419200  # 推送服务缓存 28 天
+RECORD_SIZE = 4096  # aes128gcm 单记录上限，开屏消息远用不满
+
+
+def to_macrodict(obj):
+    """Python dict → JS 对象（算法参数要的是 object，不是 Python dict）。"""
+    return _raw_to_js(obj, dict_converter=JsObject.fromEntries)
+
+
+def b64u_enc(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def b64u_dec(s: str) -> bytes:
+    return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
+
+
+async def subtle(op, *args) -> bytes:
+    """crypto.subtle.<op> 的 await 封装；返回值按 bytes 读。"""
+    return bytes(await getattr(crypto.subtle, op)(*args))
+
+
+def _hkdf_args(salt: bytes, info: bytes, length: int) -> tuple:
+    return to_macrodict({"name": "HKDF", "hash": "SHA-256", "salt": Uint8Array.new(salt), "info": Uint8Array.new(info)})
+
+
+async def _hkdf(salt: bytes, base_key, info: bytes, length: int) -> bytes:
+    """从 CryptoKey 出发做 HKDF-SHA256。"""
+    return bytes(await crypto.subtle.deriveBits(_hkdf_args(salt, info, length), base_key, length))
+
+
+def _vapid_jwk() -> dict:
+    """从 secret 组装 EC JWK：公钥是 65B 未压缩（0x04|X|Y），私钥是标量 d。"""
+    pub = b64u_dec(getattr(worker_env(), "VAPID_PUBLIC_KEY", "") or "")
+    priv = b64u_dec(getattr(worker_env(), "VAPID_PRIVATE_KEY", "") or "")
+    if len(pub) != 65 or pub[0] != 4 or len(priv) != 32:
+        raise ValueError("VAPID key 配置不完整")
+    return {"kty": "EC", "crv": "P-256", "x": b64u_enc(pub[1:33]), "y": b64u_enc(pub[33:65]), "d": b64u_enc(priv)}
+
+
+def worker_env():
+    """worker 挂进来的 env（fetch/scheduled 路径已 bind，离线脚本为 None）。"""
+    return _WORKER_ENV["env"]
+
+
+async def push_jwt(endpoint: str, pub_b64url: str) -> str:
+    """VAPID ES256 JWT：aud = 推送服务 origin（FCM / web.push.apple.com 各自对号）。"""
+    header = b64u_enc(json.dumps({"typ": "JWT", "alg": "ES256"}, separators=(",", ":")).encode())
+    claims = b64u_enc(json.dumps(
+        {"aud": endpoint.rsplit("/", 4)[0], "sub": VAPID_SUB, "exp": int(time.time()) + 12 * 3600},
+        separators=(",", ":")).encode())
+    key = await crypto.subtle.importKey(
+        "jwk", to_macrodict(_vapid_jwk()), to_macrodict({"name": "ECDSA", "namedCurve": "P-256"}), False, ["sign"])
+    sig = await subtle("sign", to_macrodict({"name": "ECDSA", "hash": "SHA-256"}), key, (header + "." + claims).encode())
+    return f"{header}.{claims}.{b64u_enc(sig)}"
+
+
+async def push_encrypt(payload: bytes, ua_pub: bytes, auth: bytes) -> bytes:
+    """RFC8291 aes128gcm：body = 22B 头(盐+rs+键长) + GCM 密文。"""
+    eph = await crypto.subtle.generateKey(
+        to_macrodict({"name": "ECDH", "namedCurve": "P-256"}), True, ["deriveBits"])
+    ua_key = await crypto.subtle.importKey(
+        "raw", Uint8Array.new(ua_pub), to_macrodict({"name": "ECDH", "namedCurve": "P-256"}), True, [])
+    shared = await crypto.subtle.deriveBits(
+        to_macrodict({"name": "ECDH", "public": ua_key}), eph.privateKey, 256)
+    shared = bytes(shared)
+    as_pub = bytes(await crypto.subtle.exportKey("raw", eph.publicKey))
+
+    ikm = await _hkdf(auth, await crypto.subtle.importKey(
+        "raw", Uint8Array.new(shared), to_macrodict({"name": "HKDF", "hash": "SHA-256"}), False, ["deriveBits"]),
+        b"WebPush: info\x00" + ua_pub + as_pub, 32)
+    salt = bytes(crypto.getRandomValues(Uint8Array.new(16)))
+    cek = await _hkdf(salt, await crypto.subtle.importKey(
+        "raw", Uint8Array.new(ikm), to_macrodict({"name": "HKDF", "hash": "SHA-256"}), False, ["deriveBits"]),
+        b"Content-Encoding: aes128gcm\x00", 16)
+    nonce = await _hkdf(salt, await crypto.subtle.importKey(
+        "raw", Uint8Array.new(ikm), to_macrodict({"name": "HKDF", "hash": "SHA-256"}), False, ["deriveBits"]),
+        b"Content-Encoding: nonce\x00", 12)
+
+    rs = RECORD_SIZE.to_bytes(4, "big")
+    header = salt + rs + bytes([len(as_pub)]) + as_pub
+    aad = header + b"\x02\x00\x00"
+    cipher = await gasm(cek, nonce, payload + b"\x02", aad)
+    return header + cipher
+
+
+async def gasm(key_raw: bytes, nonce: bytes, plain: bytes, aad: bytes) -> bytes:
+    """AES-128-GCM 加密一条记录（key/nonce 按原始字节引入）。"""
+    key = await crypto.subtle.importKey(
+        "raw", Uint8Array.new(key_raw), to_macrodict({"name": "AES-GCM"}), False, ["encrypt"])
+    return bytes(await crypto.subtle.encrypt(
+        to_macrodict({"name": "AES-GCM", "iv": Uint8Array.new(nonce), "tagLength": 128,
+                      "additionalData": Uint8Array.new(aad)}),
+        key, Uint8Array.new(plain)))
+
+
+async def push_send(sub: dict, title: str, text: str, unit: str) -> str:
+    """给单个订阅端点发 aes128gcm 推送；返回 'ok' 或失败原因（410/404 会顺删）。"""
+    endpoint = sub.get("endpoint") or ""
+    keys = sub.get("keys") or {}
+    pub_b64url = getattr(worker_env(), "VAPID_PUBLIC_KEY", "")
+    try:
+        payload = json.dumps({"title": title, "body": text, "unit": unit}, separators=(",", ":")).encode()
+        body = await push_encrypt(payload, b64u_dec(keys["p256dh"]), b64u_dec(keys["auth"]))
+        jwt = await push_jwt(endpoint, pub_b64url)
+        resp = await js_fetch(endpoint, method="POST", headers={
+            "Authorization": f"vapid t={jwt} k={pub_b64url}",
+            "TTL": str(PUSH_TTL),
+            "Urgency": "normal",
+            "Content-Type": "application/octet-stream",
+            "Content-Encoding": "aes128gcm",
+        }, body=Uint8Array.new(body))
+        status = resp.status
+        if status in (404, 410):
+            return "expired"  # 订阅失效，调用方清掉
+        if status in (200, 201):
+            return "ok"
+        return f"HTTP {status}"
+    except Exception as e:
+        return f"{type(e).__name__}: {str(e)[:120]}"
+
+
+def vapid_pubkey() -> str:
+    return getattr(worker_env(), "VAPID_PUBLIC_KEY", "") or ""
+
+
+SUBS_KEY = "subs"
+
+
+async def _load_subs(env) -> list:
+    """读订阅列表；KV 坏数据当空表（宁可少推也不崩）。"""
+    try:
+        raw = await env.SUBS.get(SUBS_KEY)
+        subs = json.loads(raw or "[]")
+        return subs if isinstance(subs, list) else []
+    except Exception:
+        return []
+
+
+async def _save_subs(env, subs: list) -> None:
+    await env.SUBS.put(SUBS_KEY, json.dumps(subs))
+
+
 def sanitize_history(raw) -> list[dict]:
     """清洗前端带回来的聊天历史：只认 [{"who": me|ai, "text": str}, ...]。
 
@@ -288,6 +446,11 @@ def build_token_payload(
 
 
 class Default(WorkerEntrypoint):
+    # 切片 2 再实现：按 persona 窗口/engagement 定时生成并推送。现在只是个桩，
+    # 先让 cron 跑起来不打错（wrangler.jsonc 的 crons 加进来后每分钟会撞它）。
+    async def scheduled(self, controller, env, ctx):
+        return
+
     async def fetch(self, request):
         # 先绑定 env，链上取 key 全靠它
         bind_worker_env(self.env)
@@ -330,6 +493,42 @@ class Default(WorkerEntrypoint):
                     {"error": "链路意外失败", "type": type(e).__name__,
                      "detail": str(e)[:300]}, status=500)
             return Response.json(out)
+
+        # ── Web Push：公钥 / 订阅登记 / 手动测试推送 ──
+        if request.method == "GET" and request.url.endswith("/push/pubkey"):
+            key = vapid_pubkey()
+            if not key:
+                return Response.json({"error": "服务端没配 VAPID_PUBLIC_KEY"}, status=500)
+            return Response(key, headers={"Content-Type": "text/plain"})
+
+        if request.method == "POST" and request.url.endswith("/push/subscribe"):
+            try:
+                body = await request.json()
+            except Exception:
+                return Response.json({"error": "请求体不是合法 JSON"}, status=400)
+            endpoint = str(body.get("endpoint") or "")
+            keys = body.get("keys") or {}
+            if not endpoint.startswith("https://") or "p256dh" not in keys or "auth" not in keys:
+                return Response.json({"error": "订阅缺 endpoint/keys(p256dh,auth)"}, status=400)
+            subs = [s for s in _load_subs(self.env) if s.get("endpoint") != endpoint][:19]
+            subs.append({"endpoint": endpoint, "keys": {"p256dh": keys["p256dh"], "auth": keys["auth"]}})
+            await _save_subs(self.env, subs)
+            return Response.json({"ok": True, "count": len(subs)})
+
+        if request.method == "POST" and request.url.endswith("/push/notify"):
+            try:
+                body = await request.json()
+            except Exception:
+                body = {}
+            unit = str(body.get("unit") or "")
+            text = str(body.get("text") or "Test push 🔔")[:200]
+            title = {"persona-leo": "Leo", "persona-chole": "Chole", "persona-sam": "Sam"}.get(unit, "FluentChat")
+            subs = _load_subs(self.env)
+            results = [await push_send(s, title, text, unit) for s in subs]
+            alive = [s for s, r in zip(subs, results) if r != "expired"]
+            if alive != subs:
+                await _save_subs(self.env, alive)
+            return Response.json({"ok": True, "sent": results.count("ok"), "detail": results})
 
         if request.method != "POST":
             return Response.json({"error": "用 POST"}, status=405)

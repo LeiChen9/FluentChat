@@ -8,6 +8,8 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <title>FluentChat</title>
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="assets/contacts/leo/avatar.png">
 <link rel="stylesheet" href="css/app.css">
 </head>
 <body>
@@ -97,12 +99,19 @@
       </div>
     </section>
 
-    <!-- ── Me（接下来做） ── -->
+    <!-- ── Me：设置与通知 ── -->
     <section class="view view--center" id="view-me" hidden>
-      <div class="placeholder">
-        <p class="placeholder__title">Progress</p>
-        <p class="placeholder__note">Coming next</p>
-      </div>
+      <header class="page-head">
+        <h1 class="page-title">Me</h1>
+        <p class="page-sub">Settings &amp; notifications</p>
+      </header>
+      <ul class="row-list">
+        <li>
+          <button class="row" id="push-enable" type="button">
+            <span class="row__text"><b>Notifications</b><i id="push-note">Off — tap to enable lock-screen push</i></span>
+          </button>
+        </li>
+      </ul>
     </section>
 
   </main>
