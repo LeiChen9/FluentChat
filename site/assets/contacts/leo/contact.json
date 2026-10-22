@@ -1,0 +1,19 @@
+{
+  "_hint": "画像+作息合一。name/status/preview/time/avatar 进 UI；base: active 档回复秒数区间；burst: [补话概率, 最多几轮]；glow: away 被回后升 active 的分钟数；hours: 下标=小时0-23 的基调，实际状态按 80/15/5 在邻档漂移",
+  "name": "Leo",
+  "status": "hate the fucking world and enjoy it.",
+  "preview": "Yo!! Some guy just dumped a whole latte on my arm at the truck 🔥",
+  "time": "09:12",
+  "avatar": "assets/contacts/leo/avatar.png",
+  "base": [10, 60],
+  "burst": [0.6, 2],
+  "glow": 10,
+  "hours": [
+    "active",  "offline", "offline", "offline",
+    "offline", "offline", "away",    "busy",
+    "busy",    "busy",    "away",    "away",
+    "away",    "away",    "away",    "away",
+    "away",    "away",    "active",  "active",
+    "active",  "active",  "active",  "active"
+  ]
+}

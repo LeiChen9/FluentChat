@@ -1,0 +1,19 @@
+{
+  "_hint": "画像+作息合一。name/status/preview/time/avatar 进 UI；base: active 档回复秒数区间；burst: [补话概率, 最多几轮]；glow: away 被回后升 active 的分钟数；hours: 下标=小时0-23 的基调，实际状态按 80/15/5 在邻档漂移",
+  "name": "Sam",
+  "status": "Mild Democrat / Hardcore Realist / Programmer / Cynic",
+  "preview": "Got a mini task for you 🎣",
+  "time": "Sun",
+  "avatar": "assets/contacts/sam/avatar.png",
+  "base": [25, 120],
+  "burst": [0.25, 1],
+  "glow": 5,
+  "hours": [
+    "active",  "active",  "offline", "offline",
+    "offline", "offline", "offline", "offline",
+    "offline", "busy",    "busy",    "busy",
+    "away",    "active",  "active",  "active",
+    "active",  "active",  "active",  "active",
+    "active",  "active",  "active",  "active"
+  ]
+}

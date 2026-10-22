@@ -4,7 +4,7 @@
 // Worker 全程只签 token，不碰音频。
 
 import { loadContacts } from "./personas.js";
-import { statusOf, nextReplyDelay, burstOf } from "./rhythm.js";
+import { statusOf, nextReplyDelay, burstOf, noteReply } from "./rhythm.js";
 
 const WS_BASE =
   "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage." +
@@ -188,6 +188,22 @@ export function initChat({ show, back }) {
   }
 
   // 本轮攒下的话一次性落成气泡，并写进本地历史。
+  // 长回复拆条：再「一次把话讲完」的人也不发一坨长文 —— 按句子分堆，
+  // 每堆 ≤ MAX_BUBBLE，第一段立落，后面的间隔 1.2-3 秒配 typing 逐段出。
+  const MAX_BUBBLE = 160;
+  function sliceReply(text) {
+    if (text.length <= MAX_BUBBLE) return [text];
+    const parts = text.match(/[^.!?…。！？]+[.!?…。！？]*/g) || [text];
+    const out = [];
+    let heap = "";
+    for (const s of parts) {
+      if (heap && (heap + s).length > MAX_BUBBLE) { out.push(heap.trim()); heap = ""; }
+      heap += s;
+    }
+    if (heap.trim()) out.push(heap.trim());
+    return out;
+  }
+
   function flushPending() {
     hideTyping();
     if (pendingMe) {
@@ -196,9 +212,22 @@ export function initChat({ show, back }) {
       pendingMe = "";
     }
     if (pendingAi) {
-      addBubble("ai", pendingAi);
-      pushHist({ who: "ai", text: pendingAi });
+      const parts = sliceReply(pendingAi);
       pendingAi = "";
+      if (parts.length === 1) { addBubble("ai", parts[0]); pushHist({ who: "ai", text: parts[0] }); return; }
+      let i = 0;
+      const drip = () => {
+        if (i >= parts.length) { hideTyping(); showStatus(); return; }
+        if (i > 0) showTyping();
+        setTimeout(() => {
+          hideTyping();
+          addBubble("ai", parts[i]);
+          pushHist({ who: "ai", text: parts[i] });
+          i++;
+          drip();
+        }, i === 0 ? 0 : 1200 + Math.random() * 1800);
+      };
+      drip();
     }
   }
 
@@ -227,6 +256,11 @@ export function initChat({ show, back }) {
   function armReply() {
     if (!unit) return;
     const delay = nextReplyDelay(unit, new Date());
+    if (delay < 0) { // busy 抽不中：挂起，每分钟看一眼状态，漂回 active 再续
+      replyTimer = setTimeout(armReply, 60000);
+      showStatus();
+      return;
+    }
     replyTimer = setTimeout(fireReply, delay * 1000);
     if (delay > 5) {
       typingTimer = setTimeout(() => {
@@ -245,6 +279,7 @@ export function initChat({ show, back }) {
     outQueue = [];
     if (!ws || !texts.length) { showStatus(); return; } // 线已断，积压作废
     burstArmed += burstOf(unit).extra; // 从这条回复起，话痨角色有概率接着说
+    noteReply(unit, new Date()); // 张嘴回话 = 短暂真在线，升 active 锁 glow 分钟
     for (const t of texts) send({ realtimeInput: { text: t } });
     showTyping();
   }

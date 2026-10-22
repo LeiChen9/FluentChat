@@ -87,15 +87,17 @@ globalThis.WebSocket = class {
   close() { this.readyState = 3; this.onclose && this.onclose(); }
 };
 // 记下每次 /token 请求体，用来断言「重进时带上了历史」；
-// 顺带把 contacts 数据目录骗回去（profile.md / moments.md），列表渲染才能跑
+// 顺带把 contacts 数据目录骗回去（contact.json / moments.md），列表渲染才能跑
 const fetches = [];
 globalThis.fetch = async (url, opts) => {
   const u = String(url);
   if (u.includes("assets/contacts")) {
     return {
       ok: true, status: 200,
-      text: async () => (u.includes("profile.md")
-        ? "name: Leo\nstatus: hate the fucking world and enjoy it.\npreview: Yo!\ntime: 09:12\navatar: assets/contacts/leo/avatar.png"
+      text: async () => (u.includes("contact.json")
+        ? JSON.stringify({ name: "Leo", status: "hate the fucking world and enjoy it.",
+          preview: "Yo!", time: "09:12", avatar: "assets/contacts/leo/avatar.png",
+          base: [10, 60], burst: [0.6, 2], glow: 10, hours: Array(24).fill("active") })
         : "09:12 — Sold out before 2pm 🔥"),
       json: async () => ({}),
     };
@@ -146,11 +148,11 @@ emit({ serverContent: { turnComplete: true } });
 console.log("✓ AI 首条气泡（整轮一次出）:", body.children[0].className, "|", body.children[0].textContent);
 console.log("✓ typing 已收:", body.children.length === 1, "| 状态:", els.get("chat-state").textContent);
 
-// 打字：自己的气泡立即出，typing 立即摆上
+// 打字：自己的气泡立即出；干等期不摆 typing（临回前 5 秒才有），顶栏先挂 persona 状态
 els.get("chat-input").value = "I'm Rice.";
 els.get("chat-bar").fire("submit", { preventDefault() {} });
 console.log("✓ 我的气泡:", body.children[1].className, "|", body.children[1].textContent,
-            "| typing:", body.children[2].className, "| 状态:", els.get("chat-state").textContent);
+            "| 干等无 typing:", body.children.length === 2, "| 状态:", els.get("chat-state").textContent);
 emit({ serverContent: { outputTranscription: { text: "Nice" } } });
 emit({ serverContent: { outputTranscription: { text: "! Rice." } } });
 emit({ serverContent: { turnComplete: true } });
@@ -207,3 +209,5 @@ await tick(10);
 const resetFetch = fetches[fetches.length - 1];
 console.log("✓ reset 重连 history 为空:", JSON.stringify(resetFetch.body.history));
 console.log("SMOKE PASS");
+// 节奏引擎的真定时器（回复延迟等）会把事件循环吊住，直接收工
+process.exit(0);
