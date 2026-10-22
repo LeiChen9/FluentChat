@@ -42,7 +42,7 @@ export async function loadContacts() {
     p.avatar = p.avatar || `${dir}avatar.png`;
     p.moments = parseMoments(await fetchText(dir + "moments.md"));
     // 节奏模块仍走 p.schedule 读 hours/base/burst/glow
-    p.schedule = { hours: p.hours, base: p.base, burst: p.burst, glow: p.glow };
+    p.schedule = { hours: p.hours, base: p.base, burst: p.burst, glow: p.glow, reply: p.reply, activeChance: p.activeChance || { away: 0.2, busy: 0.1 } };
     people.push(p);
   }
   return people;

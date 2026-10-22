@@ -1,13 +1,15 @@
 {
-  "_hint": "画像+作息合一。name/status/preview/time/avatar 进 UI；base: active 档回复秒数区间；burst: [补话概率, 最多几轮]；glow: away 被回后升 active 的分钟数；hours: 下标=小时0-23 的基调，实际状态按 80/15/5 在邻档漂移",
+  "_hint": "画像+作息合一。name/status/preview/time/avatar 进 UI；base: 无 reply 兜底用的回复秒数区间；reply: 回复分布 spike=尖峰厚尾/normal=正态/skew=右偏；burst: [补话概率, 最多几轮]；glow: away 被回后升 active 的分钟数；activeChance: busy/away 漂回 active 的概率；hours: 下标=小时0-23 的基调",
   "name": "Chole",
   "status": "Life is complex, me is joy.",
   "preview": "The windowsill flowers finally opened. Super lovely :)",
   "time": "Yesterday",
   "avatar": "assets/contacts/chole/avatar.jpg",
-  "base": [90, 300],
+  "base": [0, 90],
+  "reply": "normal",
   "burst": [0.15, 1],
   "glow": 20,
+  "activeChance": { "away": 0.5, "busy": 0.1 },
   "hours": [
     "offline", "offline", "offline", "offline",
     "offline", "offline", "active",  "active",

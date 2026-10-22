@@ -98,6 +98,8 @@ export function initChat({ show, back }) {
   let burstArmed = 0;    // 本条回复起角色还能补几轮
   let burstTimer = 0;    // 补话定时器
   let statusTimer = 0;   // 状态栏 / 苏醒检查的轮询
+  let lastAiAt = 0;      // AI 上一轮回话落地的时刻；之后不久的追问 = 话题正热
+  let retryQueue = [];   // 已喂模型但还没等到回话的文本；调用报错时等一会重试
 
   // 挂断后的复盘
   let reviewCard = null;
@@ -214,6 +216,7 @@ export function initChat({ show, back }) {
     if (pendingAi) {
       const parts = sliceReply(pendingAi);
       pendingAi = "";
+      lastAiAt = Date.now(); // 回话落地 = 参照点：紧随的追问按「话题正热」处理
       if (parts.length === 1) { addBubble("ai", parts[0]); pushHist({ who: "ai", text: parts[0] }); return; }
       let i = 0;
       const drip = () => {
@@ -236,6 +239,7 @@ export function initChat({ show, back }) {
   // 等回复期间连发的消息进队，到点一起回；typing 只在临回前出现；睡着的人
   // 不回话，等他的「醒来小时」到了才开口。
   const STATUS_LABEL = { active: "Active", away: "Away", busy: "Busy", offline: "Offline" };
+  const WARM_WINDOW = 90000; // AI 回话后多久内，用户再开口算话题正热 → 秒回
 
   // 顶栏默认文案 = persona 当前状态；typing / Connecting… 优先，不动它们。
   function showStatus() {
@@ -252,10 +256,12 @@ export function initChat({ show, back }) {
     showTyping();
   }
 
-  // 按作息抽一个延迟到点才发；较长的干等期间顶栏显示状态而非 typing。
+  // 按作息抽一个延迟到点才发；话题正热（AI 刚回过话不久）则直接秒回，
+  // 小概率「角色走开」等一阵再回；较长的干等期间顶栏显示状态而非 typing。
   function armReply() {
     if (!unit) return;
-    const delay = nextReplyDelay(unit, new Date());
+    const warm = Date.now() - lastAiAt < WARM_WINDOW;
+    const delay = nextReplyDelay(unit, new Date(), warm);
     if (delay < 0) { // busy 抽不中：挂起，每分钟看一眼状态，漂回 active 再续
       replyTimer = setTimeout(armReply, 60000);
       showStatus();
@@ -277,7 +283,8 @@ export function initChat({ show, back }) {
     if (typingTimer) { clearTimeout(typingTimer); typingTimer = 0; }
     const texts = outQueue;
     outQueue = [];
-    if (!ws || !texts.length) { showStatus(); return; } // 线已断，积压作废
+    if (!ws || !texts.length) { retryQueue = []; showStatus(); return; } // 线已断，积压作废
+    retryQueue = texts.slice(); // 没等到回话前都算「调用中」，报错据此刻重试
     burstArmed += burstOf(unit).extra; // 从这条回复起，话痨角色有概率接着说
     noteReply(unit, new Date()); // 张嘴回话 = 短暂真在线，升 active 锁 glow 分钟
     for (const t of texts) send({ realtimeInput: { text: t } });
@@ -557,7 +564,9 @@ export function initChat({ show, back }) {
     if (burstTimer) { clearTimeout(burstTimer); burstTimer = 0; }
     if (statusTimer) { clearInterval(statusTimer); statusTimer = 0; }
     outQueue = [];
+    retryQueue = [];
     burstArmed = 0;
+    lastAiAt = 0;
     stopMic();
     stopPlayback();
     if (ws) { try { ws.close(); } catch {} }
@@ -642,7 +651,9 @@ export function initChat({ show, back }) {
     if (typingTimer) { clearTimeout(typingTimer); typingTimer = 0; }
     if (burstTimer) { clearTimeout(burstTimer); burstTimer = 0; }
     outQueue = [];
+    retryQueue = []; // 重连后用户重发，别把半途的文本偷偷带过去
     burstArmed = 0;
+    lastAiAt = 0;
     ws = null;
     wakeSent = false;
     setReady(false);
@@ -664,7 +675,20 @@ export function initChat({ show, back }) {
     let d;
     try { d = JSON.parse(raw); } catch { return; }
 
-    if (d.error) { hideTyping(); setChatState(`出错：${d.error.message || d.error}`); return; }
+    if (d.error) {
+      hideTyping();
+      // 调用失败不当场放弃：挂起的文本拿回来，缓一阵再走正常节奏重试，
+      // 直到模型真的回话。这段延迟就当角色在忙别的事。
+      if (retryQueue.length) {
+        outQueue = retryQueue.concat(outQueue);
+        retryQueue = []; // 并回队列后就别再指着它了，否则下个错误会重复并队
+        if (!replyTimer) replyTimer = setTimeout(armReply, 8000 + Math.random() * 22000);
+        showStatus();
+        return;
+      }
+      setChatState(`出错：${d.error.message || d.error}`);
+      return;
+    }
 
     // setupComplete 后发一个空格唤醒 AI。Gemini 不会自己开口。
     // 醒来它先说本次话题的开场白，那就是聊天里的第一条消息。
@@ -676,6 +700,9 @@ export function initChat({ show, back }) {
     }
 
     const sc = d.serverContent || {};
+
+    // 模型出话 = 这次调用成功，重试样本立刻清掉
+    if (retryQueue.length && (sc.outputTranscription?.text || sc.turnComplete)) retryQueue = [];
 
     // 你插话时模型会被打断，已排队的音频要立刻停，不然它会继续念下去。
     // 已经转写出来的部分也别丢，先落成气泡。

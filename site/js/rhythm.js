@@ -1,18 +1,22 @@
 // 回复节奏引擎：用户给某个 persona 发消息后要等多久才被回。
 // 状态是概率状态机：hours 表只当「基调」，实际状态 80/15/5 在邻档漂移，
-// 每两分钟重掷；事件盖过基调——被回后升 active 锁 glow 分钟。
+// 每两分钟重掷；事件盖过基调——被回后升 active 锁 glow 分钟，
+// AI 回话落地后不久的追问走 warm 秒回（小概率走开一阵再回）。
 // 档位语义（Teams 风）：
-//   active  —— 手边没事手机在手：按基础区间回
-//   away    —— 没盯手机但收得到提醒：×4
+//   active  —— 手边没事手机在手：按各人 reply 分布抽秒数（spike/normal/skew）
+//   away    —— 没盯手机但收得到提醒：×4，下限也随机化
 //   busy    —— 真忙：抽中（BUSY_CHANCE）才回，×9；抽不中挂起，漂回 active 再回
 //   offline —— 睡着了，不回；消息排队压到醒来（下一个基调非 offline 小时）
-// 缺数据/表坏了就当 active 处理，宁可回快也不炸。
+// 缺数据/表坏了就当 active 处理（base 区间兜底），宁可回快也不炸。
 
 const FALLBACK = { base: [30, 180], burst: [0, 1], glow: 15 };
 const FACTOR = { away: 4, busy: 9 };
 const STATUS = ["active", "away", "busy", "offline"];
 const BUSY_CHANCE = 0.35; // busy 收到消息抽中才回
 const STALE = 120000;     // 状态每两分钟重掷一次，旧签过期
+const WARM_LEAVE = 0.15;      // 话题正热时角色走开的概率
+const WARM_NOW = [0.3, 2];    // 秒回区间（秒）
+const WARM_AWAY = [45, 180];  // 走开多久（秒），回来再回
 
 // 状态缓存：id -> { anchor, state, at, until? }
 const live = new Map();
@@ -28,11 +32,13 @@ function anchorOf(p, date) {
 // 夹在中间的 away 两侧各 0.1。offline 不漂。
 const DRIFT = { active: [0.8, 0.15, 0.05], away: [0.1, 0.8, 0.1], busy: [0.05, 0.15, 0.8] };
 
-function driftState(anchor) {
+function driftState(anchor, p) {
   const i = ["active", "away", "busy"].indexOf(anchor);
   if (i < 0) return anchor;
   const w = DRIFT[anchor];
   const r = Math.random();
+  const chance = p?.schedule?.activeChance?.[anchor];
+  if (chance != null) return r < chance ? "active" : (r - chance) / (1 - chance) < w[1] / (1 - w[0]) ? "away" : "busy";
   return ["active", "away", "busy"][r < w[0] ? 0 : r < w[0] + w[1] ? 1 : 2];
 }
 
@@ -45,9 +51,27 @@ function settle(p, date) {
   const anchor = anchorOf(p, date);
   // at 只记重掷时刻，别刷成 now —— 否则状态永远「新鲜」，两分钟重掷形同虚设
   const fresh = rec.anchor === anchor && now - rec.at < STALE && !rec.until;
-  const state = fresh ? rec.state : driftState(anchor);
+  const state = fresh ? rec.state : driftState(anchor, p);
   live.set(p?.id, { anchor, state, at: fresh ? rec.at : now });
   return state;
+}
+
+// 各人的回复分布（性格的一部分）：
+//   spike  —— 尖峰厚尾（Leo）：大概率秒回，少数拖很久
+//   normal —— 正态（Chole）：几乎都在 4-5 秒附近
+//   skew   —— 右偏（Sam）：不怎么看手机，多数偏慢、长尾拖右
+const SHAPE = {
+  spike() { return Math.random() < 0.7 ? Math.random() * 2 : rollSec([8, 240]); },
+  normal() {
+    const u1 = 1 - Math.random(), u2 = Math.random();
+    return Math.min(12, Math.max(0.5, 4.5 + Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2) * 1.2));
+  },
+  skew() { return rollSec([6, 300]); },
+};
+
+function sampleReply(p) {
+  const fn = SHAPE[p?.schedule?.reply];
+  return fn ? fn() : rollSec(params(p).base);
 }
 
 export function statusOf(p, date = new Date()) {
@@ -94,12 +118,19 @@ export function burstOf(p) {
   return { chance: Math.min(1, Math.max(0, chance || 0)), extra: Math.max(0, Math.floor(extra) || 0) };
 }
 
-// 回复要等多久（秒）。offline 等「到醒来」；busy 抽不中 → -1：这轮不回，
-// 消息挂起，状态漂回 active 后由 live.js 的轮询接着安排。
-export function nextReplyDelay(p, date = new Date()) {
+// 回复要等多久（秒）。warm = 话题正热（AI 刚回过话不久）：忽略基调秒回，
+// 小概率「角色走开」等一阵再回。offline 等「到醒来」；busy 抽不中 → -1：
+// 这轮不回，消息挂起，状态漂回 active 后由 live.js 的轮询接着安排。
+export function nextReplyDelay(p, date = new Date(), warm = false) {
   const st = settle(p, date);
   if (st === "offline") return secondsToWake(p, date);
   if (st === "busy" && Math.random() > BUSY_CHANCE) return -1;
-  const [lo, hi] = params(p).base;
-  return rollSec([lo * (FACTOR[st] ?? 1), hi * (FACTOR[st] ?? 1)]);
+  if (warm) {
+    if (Math.random() >= WARM_LEAVE) return WARM_NOW[0] + Math.random() * (WARM_NOW[1] - WARM_NOW[0]);
+    const [lo, hi] = WARM_AWAY;
+    return lo + Math.random() * (hi - lo);
+  }
+  const f = FACTOR[st] ?? 1;
+  // away/busy 慢的是「没盯手机」，下限也随机化，别让回复卡在同一秒上
+  return f > 1 ? Math.max(sampleReply(p), rollSec([5, 15])) * f : sampleReply(p);
 }
