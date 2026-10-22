@@ -9,9 +9,9 @@
   "theme_color": "#FAF6EE",
   "icons": [
     {
-      "src": "assets/npc-cat.webp",
-      "sizes": "192x192 512x512",
-      "type": "image/webp",
+      "src": "assets/FluentChat.png",
+      "sizes": "180x180",
+      "type": "image/png",
       "purpose": "any"
     }
   ]

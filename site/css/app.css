@@ -854,6 +854,25 @@ button { font: inherit; color: inherit; }
   color: var(--ink-3);
 }
 
+/* Contacts 状态点：active/away/busy/offline → 绿/黄/红/灰 */
+.row__status {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.row__status .dot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+}
+
+.dot--active { background: #34c759; }
+.dot--away { background: #f2b45a; }
+.dot--busy { background: #ff5f57; }
+.dot--offline { background: var(--ink-3); }
+
 /* ── Me 页 ── */
 .row__icon {
   width: 52px;

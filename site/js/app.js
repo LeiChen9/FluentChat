@@ -1,7 +1,12 @@
 import { initChat } from "./live.js";
 import { loadContacts } from "./personas.js";
+import { statusOf } from "./rhythm.js";
 // 四个主 tab + 一个对话子页（对应 line/whatsapp 首层导航）。
 const VIEWS = ["chats", "contacts", "moments", "me", "chat"];
+
+// Contacts 状态副标题跟 rhythm 的档位走：点颜色和文案一一对应
+const STATUS_LABEL = { active: "Active", away: "Away", busy: "Busy", offline: "Offline" };
+let paintStatus = null;
 
 // 对话页是聊天列表的子页面，push 进去后底部仍然亮着聊天。
 const TAB_OF = { chat: "chats" };
@@ -33,6 +38,8 @@ function showView(name) {
     const on = tab.dataset.view === tabFor;
     tab.setAttribute("aria-selected", String(on));
   }
+  // 每次进 Contacts 重算状态点（rhythm 的状态每 2 分钟漂移，不能只画一次）
+  if (name === "contacts") paintStatus?.();
 }
 
 const chat = initChat({
@@ -46,6 +53,7 @@ let findPersona = null;
 loadContacts().then((people) => {
   findPersona = (unit) => people.find((p) => p.id === unit) || null;
   const contactList = document.getElementById("contact-list");
+  const statusBits = [];
   for (const p of people) {
     const li = document.createElement("li");
     const btn = document.createElement("button");
@@ -53,11 +61,22 @@ loadContacts().then((people) => {
     btn.className = "row";
     btn.innerHTML =
       `<img class="row__av" src="${p.avatar}" alt="">` +
-      `<span class="row__text"><b>${p.name}</b><i>${p.status}</i></span>`;
+      `<span class="row__text"><b>${p.name}</b><i class="row__status"><span class="dot"></span><span class="st-label"></span></i></span>`;
     btn.addEventListener("click", () => chat.open(p));
     li.append(btn);
     contactList.append(li);
+    statusBits.push({ p, dot: btn.querySelector(".dot"), label: btn.querySelector(".st-label") });
   }
+
+  // 状态随时段漂移（active/away/busy/offline → 绿/黄/红/灰），进 tab 时刷
+  paintStatus = () => {
+    for (const b of statusBits) {
+      const st = statusOf(b.p, new Date());
+      b.dot.className = `dot dot--${st}`;
+      b.label.textContent = STATUS_LABEL[st];
+    }
+  };
+  paintStatus();
 
   const momentList = document.getElementById("moment-list");
   for (const p of people) {

@@ -17,6 +17,6 @@
     "active",  "away",    "away",    "away",
     "busy",    "away",    "away",    "away",
     "away",    "active",  "active",  "active",
-    "active",  "active",  "offline", "offline"
+    "active",  "active",  "active", "active"
   ]
 }
