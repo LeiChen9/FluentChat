@@ -316,8 +316,13 @@ class Default(WorkerEntrypoint):
                     {"error": f"/chat 只面向 persona：{sorted(PERSONAS)}"},
                     status=400)
             history = sanitize_history(body.get("history"))
+            # 可选：主动消息场景的临时指令（最后一条 user 消息，模型照办开口）
+            directive = str(body.get("directive") or "").strip()[:400]
             try:
-                out = await run_chain(to_messages(unit, history))
+                msgs = to_messages(unit, history)
+                if directive:
+                    msgs.append({"role": "user", "content": directive})
+                out = await run_chain(msgs)
             except RuntimeError as e:
                 return Response.json({"error": str(e)}, status=502)
             except Exception as e:

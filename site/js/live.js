@@ -5,6 +5,7 @@
 
 import { loadContacts } from "./personas.js";
 import { statusOf, nextReplyDelay, burstOf, noteReply } from "./rhythm.js";
+import { proactiveTick, engageBump, noteUserTalk } from "./proactive.js";
 
 const WS_BASE =
   "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage." +
@@ -109,7 +110,10 @@ export function initChat({ show, back }) {
   let reviewCap = null;
 
   // ── 聊天列表：persona 好友，一行一个（read 自 contacts 数据目录） ──
-  loadContacts().then((people) => {
+  const rowOf = new Map(); // persona.id -> { preview, time } 列表行元素，主动消息要刷新预览
+  let people = [];
+  loadContacts().then((list) => {
+    people = list;
     const chatList = document.getElementById("chat-list");
     for (const p of people) {
       const li = document.createElement("li");
@@ -123,7 +127,12 @@ export function initChat({ show, back }) {
       btn.addEventListener("click", () => openChat(p));
       li.append(btn);
       chatList.append(li);
+      rowOf.set(p.id, {
+        preview: btn.querySelector(".row__text i"),
+        time: btn.querySelector(".row__time"),
+      });
     }
+    startProactive(); // 名单到齐才开始调度
   });
 
   // ── 界面小工具 ──
@@ -296,6 +305,94 @@ export function initChat({ show, back }) {
       send({ realtimeInput: { text: " " } });
       showTyping();
     }, 2000 + Math.random() * 6000);
+  }
+
+  // ── 主动消息（proactive.js 调度，内容走 /chat 无流式链路） ──
+  // persona 没等到用户说话也能自己开口：频率/时段在 contact.json，
+  // 冷热由 engagement 调；offline 永不主动，away/busy 概率减半——
+  // 真开口那一刻先 noteReply 升 active，状态和动作保持一致。
+  const PRO_MINUTE = 60000;
+  const PRO_REQ =
+    "(Proactive turn. Nobody spoke just now: text me first like a friend would. " +
+    "Pick up whatever we talked about recently or something happening in your day " +
+    "right now. 1-2 short casual sentences. Not a meta-greeting, don't mention " +
+    "that you haven't heard from me.)";
+  const PRO_RETRY_MS = 90000; // 生成失败缓 1.5 分钟再试，一次为限
+
+  let proTimer = 0;
+  const proFail = new Map(); // persona.id -> 剩余重试（避开每日名额浪费）
+
+  function startProactive() {
+    if (proTimer) return;
+    proTimer = setInterval(() => {
+      for (const p of proactiveTick(people, new Date())) fireProactive(p);
+    }, PRO_MINUTE);
+  }
+
+  async function fireProactive(p, retried) {
+    if (unit === p) {
+      // 就在这个对话页：用户话已在途或正在通话时别抢话
+      if (mode !== "text" || outQueue.length || replyTimer) return;
+    }
+    noteReply(p, new Date()); // 想开口先升 active
+    const text = await genProactive(p, retried);
+    if (!text) return;
+    deliverProactive(p, text);
+  }
+
+  async function genProactive(p, retried) {
+    try {
+      const res = await fetch("/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          unit: p.id,
+          history: packFor(p),
+          directive: PRO_REQ,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.content) throw new Error(data.error || `HTTP ${res.status}`);
+      const text = data.content.trim();
+      if (!text) throw new Error("空白响应");
+      proFail.delete(p.id);
+      return text;
+    } catch (e) {
+      console.warn("proactive:", e);
+      if (!retried) proFail.set(p.id, setTimeout(() => {
+        proFail.delete(p.id);
+        fireProactive(p, true); // 只重试一次：成了就没浪费每日名额
+      }, PRO_RETRY_MS));
+      return "";
+    }
+  }
+
+  // 给模型的近况：开着本对话用现成的 packHist；没开着从本地历史里切。
+  function packFor(p) {
+    if (unit === p) return packHist();
+    return loadHist(p.id).filter((h) => h.who === "me" || h.who === "ai")
+      .slice(-HIST_FOR_AI)
+      .map((h) => ({ who: h.who, text: String(h.text).slice(0, HIST_CHARS) }));
+  }
+
+  // 落地：开着本对话就在页里出气泡进记忆；没开着只落盘 + 刷列表预览。
+  function deliverProactive(p, text) {
+    if (unit === p && ready && mode === "text" && !reviewCard) {
+      noteReply(p, new Date()); // 正式开口，再锁一次 glow
+      const parts = sliceReply(text);
+      for (const t of parts) { addBubble("ai", t); pushHist({ who: "ai", text: t }); }
+      lastAiAt = Date.now(); // 用户马上接话 = 话题正热的参照点
+      return;
+    }
+    // 对话页没开：写进本地历史，回页时自然渲染；列表预览提个醒
+    const arr = loadHist(p.id);
+    arr.push({ who: "ai", text });
+    try { localStorage.setItem(HIST_KEY + p.id, JSON.stringify(arr.slice(-HIST_MAX))); } catch {}
+    const row = rowOf.get(p.id);
+    if (row) {
+      row.preview.textContent = text.length > 48 ? text.slice(0, 48) + "…" : text;
+      row.time.textContent = "Now";
+    }
   }
 
   // ── 历史（本地留存，下次打开还在） ──
@@ -856,6 +953,9 @@ export function initChat({ show, back }) {
     sendBtn.disabled = true;
     addBubble("me", text);
     pushHist({ who: "me", text });
+    // 交互反馈进调度：用户开口 = 有人理，engagement 回弹；晾着的那次结清
+    engageBump(unit.id, Date.now() - lastAiAt < WARM_WINDOW ? 0.3 : 0.2);
+    noteUserTalk(unit.id);
     if (mode === "call") {
       send({ realtimeInput: { text } }); // 通话里打字不过节奏，照旧直发
       return;

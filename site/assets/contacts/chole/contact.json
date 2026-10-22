@@ -1,5 +1,5 @@
 {
-  "_hint": "画像+作息合一。name/status/preview/time/avatar 进 UI；base: 无 reply 兜底用的回复秒数区间；reply: 回复分布 spike=尖峰厚尾/normal=正态/skew=右偏；burst: [补话概率, 最多几轮]；glow: away 被回后升 active 的分钟数；activeChance: busy/away 漂回 active 的概率；hours: 下标=小时0-23 的基调",
+  "_hint": "画像+作息合一。name/status/preview/time/avatar 进 UI；base: 无 reply 兜底用的回复秒数区间；reply: 回复分布 spike=尖峰厚尾/normal=正态/skew=右偏；burst: [补话概率, 最多几轮]；glow: away 被回后升 active 的分钟数；activeChance: busy/away 漂回 active 的概率；proactive: 主动消息 {perDay:[lo,hi] 每天 1-2,engagement 0→lo、1→hi, windows:[[起,止],...] 小时段开窗}，不配=不主动发；hours: 下标=小时0-23 的基调",
   "name": "Chole",
   "status": "Life is complex, me is joy.",
   "preview": "The windowsill flowers finally opened. Super lovely :)",
@@ -10,6 +10,7 @@
   "burst": [0.15, 1],
   "glow": 20,
   "activeChance": { "away": 0.5, "busy": 0.1 },
+  "proactive": { "perDay": [1, 2], "windows": [[13, 17], [20, 24]] },
   "hours": [
     "offline", "offline", "offline", "offline",
     "offline", "offline", "active",  "active",
