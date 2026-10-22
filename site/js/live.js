@@ -121,7 +121,12 @@ export function initChat({ show, back }) {
   };
 
   // ── 聊天列表：persona 好友，一行一个（read 自 contacts 数据目录） ──
-  const rowOf = new Map(); // persona.id -> { preview, time } 列表行元素，主动消息要刷新预览
+  const rowOf = new Map(); // persona.id -> { li, preview, time } 列表行，有新消息要置顶
+  // 有新消息（无论谁说的）就把这行的 li 挪到列表最上面，微信式
+  function bumpRow(id) {
+    const row = rowOf.get(id);
+    if (row) row.li.parentNode.prepend(row.li);
+  }
   let people = [];
   loadContacts().then((list) => {
     people = list;
@@ -139,6 +144,7 @@ export function initChat({ show, back }) {
       li.append(btn);
       chatList.append(li);
       rowOf.set(p.id, {
+        li: li,
         preview: btn.querySelector(".row__text i"),
         time: btn.querySelector(".row__time"),
       });
@@ -459,10 +465,11 @@ export function initChat({ show, back }) {
       lastAiAt = Date.now(); // 用户马上接话 = 话题正热的参照点
       return;
     }
-    // 对话页没开：写进本地历史，回页时自然渲染；列表预览提个醒
+    // 对话页没开：写进本地历史，回页时自然渲染；列表预览提个醒+置顶
     const arr = loadHist(p.id);
     arr.push({ who: "ai", text });
     try { localStorage.setItem(HIST_KEY + p.id, JSON.stringify(arr.slice(-HIST_MAX))); } catch {}
+    bumpRow(p.id);
     const row = rowOf.get(p.id);
     if (row) {
       row.preview.textContent = clip(text);
@@ -492,6 +499,7 @@ export function initChat({ show, back }) {
       localStorage.setItem(HIST_KEY + unit.id, JSON.stringify(hist.slice(-HIST_MAX)));
     } catch {}
     // 落一条预览跟着动，回列表就能看到最新一条（像 WhatsApp/LINE）
+    bumpRow(unit.id); // 谁有新消息就置顶（微信式），自己发的也算
     const row = rowOf.get(unit.id);
     if (row) {
       row.preview.textContent = clip((item.who === "me" ? "You: " : "") + item.text);

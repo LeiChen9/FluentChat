@@ -54,7 +54,7 @@ loadContacts().then((people) => {
   findPersona = (unit) => people.find((p) => p.id === unit) || null;
   const contactList = document.getElementById("contact-list");
   const statusBits = [];
-  for (const p of people) {
+  for (const p of [...people].sort((a, b) => a.name.localeCompare(b.name))) {
     const li = document.createElement("li");
     const btn = document.createElement("button");
     btn.type = "button";
