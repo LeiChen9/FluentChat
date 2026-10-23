@@ -230,3 +230,39 @@ npx wrangler deploy                  # 改了 site/ 必须部署，workers.dev �
 - `worker.py` 的 `build_system_instruction()` 按 unit 号选 base：unit-07..12 用 `base-ch2.md`，unit-01..06 仍用 `base.md`。
 - 单元话题同步调整：unit-08 改「最近的一段工作经历」，unit-09 改「具体做法带专业细节」，unit-12 从「澄清误会」改成「聊哪里不足可以提升」。
 
+## worker.py 分层重构（2026-10-23）
+
+### 需求与变更
+1. **工具层下沉** `backend/common.py`：模型容灾链（ENDPOINTS / GROQ 闸门 / MODEL_CHAIN / _chat_via / run_chain）、env 绑定与 secret 读取（`bind_worker_env` + 新的 `env_key`，合并原 `_env_key`/`get_api_key` 两套防御）、token 估算、KV 订阅存取、vapid_pubkey。写法对照 argus/backend/common.py。
+2. **配置层** `backend/config.py`：AUTH_TOKENS_URL / MODEL / VOICE / UNITS / PERSONAS / VOICE_BY_ID / HIST_MAX_* 全部常量与白名单的唯一事实源。
+3. **prompt 数据层** `backend/prompt_data.py`：`tools/gen_prompts.py` 的注入目标从 worker.py 内联区改为生成独立文件，worker.py 只 `from backend.prompt_data import PROMPTS`。早期"不敢确认模块导入可靠性"才内联——argus 的多模块 Python Worker 已实测线上可靠，此顾虑解除。
+4. `TEXT_STYLE` 主体改为 `prompts/text_style.md`，走 gen_prompts 流水线；`to_messages` 拼接分隔符由原前导空格改为 `\n`（字符级 gen_prompts 会 strip md 边界空白），其余逐字节一致。
+5. **清死代码**：`import hashlib`、`push_send`（定义后零调用，实际发推送在 pusher/index.js）、`import json`（重构后无直接使用）。
+6. 业务函数（to_messages / build_system_instruction / build_token_payload / sanitize_history）与 fetch 路由原样保留；`_load_subs` 坏数据兜底、JSON 400、502 边界 try/except 按需保留。
+
+### 详细清单
+| 文件 | 改动 |
+| --- | --- |
+| `backend/common.py`（新） | 工具层：容器链、env、订阅存取（含 `backend/__init__.py`） |
+| `backend/config.py`（新） | 配置层常量 |
+| `backend/prompt_data.py`（新，生成） | 19 个 prompt（15 md + 3 persona + text_style） |
+| `prompts/text_style.md`（新） | TEXT_STYLE 源文件 |
+| `tools/gen_prompts.py` | 目标改 `backend/prompt_data.py`，更新 docstring |
+| `worker.py` | 502 → ~250 行：只留 import、业务组装函数、`Default.fetch` 路由 |
+
+### 验证
+- 离线桩（stub workers/pyodide）import 全部模块通过；`run_chain`/`bind_worker_env` 与 common 为同一函数对象；config 常量为同一对象。
+- 对 HEAD 逐字节回归：sanitize_history / build_system_instruction / build_token_payload / to_messages / run_chain 等，唯一差异是 text_style 的 1 个分隔符字符（见上）。
+- 重跑 gen_prompts 顺带修复了历史漂移：`prompts/personas.md` 上次编辑后未重跑脚本，本次一并补进生成数据。
+
+### 待测试
+- `wrangler dev` / 部署后实测跨目录 import（`from backend.…`）打包是否正常，以及 /health、/token、/chat、/push/* 四条路由。
+- 遗留小账：`prompts/personas.md` 里的 "one whitelist line in `worker.py`" 文案指向旧位置，下次改该文件时顺手改成 `backend/config.py`。
+
+### 片 5：路由层去防御（同日追加)
+- 删 `/token` 的「没配 GEMINI_API_KEY → 500」前置检查与 `/push/pubkey` 的「没配 VAPID → 500」检查：secret 由我们 `wrangler secret put` 配置，缺配视为部署错误，让其自然失败（Worker 500 / /health 的 has_key 可见）。
+- `/token` 的 fetch 失败 / 非 200 / JSON 解析三个 try 合并为一个 → 502；`/chat` 删 `except Exception → 500` 二次包装（run_chain 已统一包成 RuntimeError → 502）；`/push/subscribe` 删整体 500 兜底，只留 JSON → 400。
+- worker.py 260 → 250 行。保留的 except 共 5 处：3 处 JSON→400（HTTP 协议边界）、/chat 的 RuntimeError→502（链耗尽）、/token 的签发统一→502。`sanitize_history`（前端输入钉 prompt 的信任边界）、`env_key` try/except（链「没配 key 跳过」语义）、`_load_subs` KV 坏数据兜底（common.py，按先前拍板保留）不在删列。
+- wrangler dev 复测：/health 200、/chat 502（本地无链 key，走通 backend 链）、跨包 import 正常。`/token` 实签本地网络外发不通（需部署环境验证），代码路径由同一 try 在 NameError 时期的 502 响应证明已执行。
+- **线上部署冒烟通过（2026-10-23）**：`wrangler deploy` → `fluentchat-api.luent-hat.workers.dev`。/health 200（has_key=true、chain_ready=6）；POST / 实签成功（unit-01 裸调 + persona-sam 带历史各持一个新 token）；/chat 实答（链上 command-a-plus-05-2026 回复）；unit 白名单 400、subscribe 缺参 400、/push/pubkey 200 均正常。重构收口。
+
