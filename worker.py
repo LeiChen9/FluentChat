@@ -246,8 +246,8 @@ class Default(WorkerEntrypoint):
             if not user:
                 return Response.json({"error": "请先登录"}, status=401)
             force = (str(request.url).split("?", 1)[-1].find("force=1") >= 0) or str(request.url).split("?")[-1] == "force=1"
-            wrote = await self._cron_sweep(self.env, now=cloud_npc.now_ms() / 1000.0,
-                                           one_user=user, force=force)
+            wrote, diag = await self._cron_sweep(self.env, now=cloud_npc.now_ms() / 1000.0,
+                                                 one_user=user, force=force)
             return Response.json({"ok": True, "wrote": wrote, "diag": diag})
 
         # 个人资料：用户名 + 头像（dataURL 存 {user}/avatar.txt，前端直接贴 img.src）
@@ -403,7 +403,7 @@ class Default(WorkerEntrypoint):
         await self._cron_sweep(env, now=cloud_npc.now_ms() / 1000.0)
 
     # 一轮 cron 的主体（scheduled 与自检路由共用）。逐离线用户抽签代打。
-    async def _cron_sweep(self, env, now: float, one_user: str | None = None, force: bool = False) -> list[str]:
+    async def _cron_sweep(self, env, now: float, one_user: str | None = None, force: bool = False) -> tuple[list, list]:
         """one_user 传值 = 自检模式：只跑该用户、绕过心跳判定；正常轮跑全部离线用户。
         force 穿透到底层抽签（仍守窗口与名额）。返回本轮真中签并写库的 user/unit。"""
         bind_worker_env(env)
@@ -474,7 +474,7 @@ class Default(WorkerEntrypoint):
             await cloud_npc.save_state(env, user, {**state, "ledger": ledgers, "eng": eng})
         if offline:
             print(f"[cron] offline passed={'watch' if one_user is None else 'kick'}={offline} wrote={wrote}")
-        return wrote
+        return wrote, diag
 
     # 离线代打的生成与落库。链上任何一层失败就整个放弃本条：名额已扣，
     # 别让半成品消息写进镜像。
