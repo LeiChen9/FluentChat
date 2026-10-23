@@ -309,3 +309,12 @@ npx wrangler deploy                  # 改了 site/ 必须部署，workers.dev �
 - 语义区分：不传 t = 此刻发送；显式 null = 旧条目（无 t，沿基线不插线）。teardown 清屏重置基线。
 - hist 全部写入点补 `t: Date.now()`（重开后时间线不丢）；teardown 的删气泡选择器天然覆盖 msg--time。
 - 真源注桩边界仿真 9/9 全绿（首条无基线、<5min、≥5min、跨天、legacy 中插不改基线）。部署 a492b0b4。
+
+## 3c：离线代打接横幅（2026-10-23）
+- 订阅登记迁到各人名下 `{user}/subs.json`（common.py `_load_subs/_save_subs` 帐 user）；泛 KV 单键全订名单废弃。
+- 通知偏好三档（阶 iOS 消息通知预览设置）：`state.notif` = off / ticker / preview（默认 preview）；`PUT /prefs` 校验落地。
+- `_proactive` 生成→落镜像→`_push`：不仅 off，逐订阅过 PUSHER (`{"subscription","payload"}`)；ticker 的 body = 「给你发来一条新消息」、preview 带原话；404/410 订阅顺手从 `{user}/subs.json` 清出。payload title 用 contact.json 的 name。
+- Me 页 Notifications 行改点出 bottom sheet 三选（Off / Ticker only / Message preview）；非 Off 档子公司 ensurePush()（原 enablePush 抽出、去掉按钮禁用态）：登记订阅成功才 PUT /prefs。权限请求推迟到选档那刻（iOS 主屏 web app 规矩）。
+- 自检 kick 加 diag（left/sent/eng/hit/contact load 失败全读出）——修完 500（_cron_sweep 返回 tuple）才知道上次「kick 空」真因：第一次 kick 已把名额扣了但生成失败、第二次连名额都没有。diag 全读后又顺对齐了窗口观感（chole 窗 20 点才开）。
+- 本地验收：prefs 非法 400 / 合法落 state、订阅写 `{user}/subs.json`；prod：kick diag 五百修复后指标开口全准。
+- 未验完：真实设备（iOS 主屏 web app）选档后横幅落地——pusher 端 VAPID 一直是那套，等用户真机打一发；20:00 后 chole 窗自然开可再验。
