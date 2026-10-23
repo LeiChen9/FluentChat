@@ -18,6 +18,7 @@
 
 import json
 import re
+from urllib.parse import urlsplit
 from workers import Response, WorkerEntrypoint, fetch as js_fetch
 from backend import auth
 from backend import cloud_npc
@@ -340,7 +341,23 @@ class Default(WorkerEntrypoint):
         # run_worker_first 打开后，所有请求都先过 Python：
         # 静态文件（/、css、fires 等）必须在这里代发，否则前端会 404。
         if request.method in ("GET", "HEAD"):
-            return await self.env.ASSETS.fetch(request)
+            res = await self.env.ASSETS.fetch(request)
+            # 落持久缓存策略（默认只有 1 小时，iOS 主屏 app 每次重开都整个
+            # 重新拉）：前端代码/音频/图 1 天 + 7 天 stale-while-revalidate，
+            # 入口 HTML no-cache 保留 etag 304 —— 版本照旧当天见效，其余
+            # 资源杀 app 冷启几乎不再发请求。
+            p = urlsplit(str(request.url)).path
+            kind = p.rsplit(".", 1)[-1].lower() if "." in p.rsplit("/", 1)[-1] else ""
+            long_c = kind in ("js", "css", "m4a", "webp", "jpg", "jpeg", "png", "svg", "ico")
+            if long_c or kind == "html" or p.endswith("/"):
+                cc = ("public, max-age=86400, stale-while-revalidate=604800"
+                      if long_c else "no-cache")
+                headers = {k: v for k, v in res.headers.items()
+                           if k.lower() != "cache-control"}
+                headers["cache-control"] = cc
+                return Response(res.body, status=res.status,
+                                headers=headers)
+            return res
 
         if request.method != "POST":
             return Response.json({"error": "用 POST"}, status=405)
