@@ -828,21 +828,32 @@ export function initChat({ show, back }) {
     // sort 稳定，旧数据没 t 的按原位排在最前）。
     hist = loadHist(u.id);
     {
+      // 云端镜像拉取：本地历史干净ピ仕事 devs 正常，但 iOS 主屏 app 冷启动
+      // 首猜偶发挂（登录都成功了家的 fetch 也会 Load failed）——空档时再补
+      // 一枪。镜像里多的写回本地，主人反正史不丢。
       const key = (i) => `${i.kind || "b"}|${i.who}|${i.text}|${i.t ?? ""}`;
-      try {
-        const res = await fetch(`/hist/${u.id}`);
-        if (res.ok) {
-          const arr = await res.json();
-          if (Array.isArray(arr) && arr.length) {
-            const seen = new Set(hist.map(key));
-            const extra = arr.filter((c) => c && c.who && !seen.has(key(c)));
-            if (extra.length) {
-              hist = [...hist, ...extra].sort((a, b) => (a.t ?? 0) - (b.t ?? 0)).slice(-HIST_MAX);
-              try { localStorage.setItem(HIST_KEY + u.id, JSON.stringify(hist)); } catch {}
-            }
-          }
+      let arr = null;
+      const pullMirror = async () => {
+        try {
+          const res = await fetch(`/hist/${u.id}`);
+          if (!res.ok) return null;
+          const data = await res.json();
+          return Array.isArray(data) ? data : null;
+        } catch { return null; }
+      };
+      arr = await pullMirror();
+      if (!arr && !hist.length) { // 本地也空 = 冷启动首猜失败的高发场景，等半秒再拉
+        await new Promise((r) => setTimeout(r, 400));
+        if (u === unit) arr = await pullMirror();
+      }
+      if (arr && arr.length) {
+        const seen = new Set(hist.map(key));
+        const extra = arr.filter((c) => c && c.who && !seen.has(key(c)));
+        if (extra.length) {
+          hist = [...hist, ...extra].sort((a, b) => (a.t ?? 0) - (b.t ?? 0)).slice(-HIST_MAX);
+          try { localStorage.setItem(HIST_KEY + u.id, JSON.stringify(hist)); } catch {}
         }
-      } catch {}
+      }
     }
     for (const item of hist) {
       if (item.kind === "review") addReviewCard(item.text, false);
