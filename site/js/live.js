@@ -119,6 +119,20 @@ export function initChat({ show, back }) {
     const last = talk[talk.length - 1];
     return last ? clip((last.who === "me" ? "You: " : "") + last.text) : null;
   };
+  // 列表时间戳：当天显示时间，昨天 Yesterday，一周内周几，更早显示日期（Nov 15th）
+  const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const DAYS = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+  function fmtRowTime(ts) {
+    const d = new Date(ts), now = new Date();
+    const gap = Math.round((new Date(now.getFullYear(), now.getMonth(), now.getDate())
+      - new Date(d.getFullYear(), d.getMonth(), d.getDate())) / 86400000);
+    if (gap === 0) return `${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`;
+    if (gap === 1) return "Yesterday";
+    if (gap > 0 && gap < 7) return DAYS[d.getDay()];
+    const n = d.getDate();
+    const suf = n % 10 === 1 && n !== 11 ? "st" : n % 10 === 2 && n !== 12 ? "nd" : n % 10 === 3 && n !== 13 ? "rd" : "th";
+    return `${MONTHS[d.getMonth()]} ${n}${suf}`;
+  }
 
   // ── 聊天列表：persona 好友，一行一个（read 自 contacts 数据目录） ──
   const rowOf = new Map(); // persona.id -> { li, preview, time } 列表行，有新消息要置顶
@@ -149,6 +163,8 @@ export function initChat({ show, back }) {
         time: btn.querySelector(".row__time"),
       });
       rowOf.get(p.id).preview.textContent = lastLine(p.id) || "";
+      const lastTalk = loadHist(p.id).filter((h) => h.who === "me" || h.who === "ai").at(-1);
+      rowOf.get(p.id).time.textContent = lastTalk && lastTalk.t ? fmtRowTime(lastTalk.t) : p.time;
     }
     startProactive(); // 名单到齐才开始调度
   });
@@ -467,13 +483,13 @@ export function initChat({ show, back }) {
     }
     // 对话页没开：写进本地历史，回页时自然渲染；列表预览提个醒+置顶
     const arr = loadHist(p.id);
-    arr.push({ who: "ai", text });
+    arr.push({ who: "ai", text, t: Date.now() });
     try { localStorage.setItem(HIST_KEY + p.id, JSON.stringify(arr.slice(-HIST_MAX))); } catch {}
     bumpRow(p.id);
     const row = rowOf.get(p.id);
     if (row) {
       row.preview.textContent = clip(text);
-      row.time.textContent = "Now";
+      row.time.textContent = fmtRowTime(Date.now());
     }
   }
 
@@ -494,6 +510,7 @@ export function initChat({ show, back }) {
 
   function pushHist(item) {
     if (!unit) return;
+    item.t = Date.now();
     hist.push(item);
     try {
       localStorage.setItem(HIST_KEY + unit.id, JSON.stringify(hist.slice(-HIST_MAX)));
@@ -503,7 +520,7 @@ export function initChat({ show, back }) {
     const row = rowOf.get(unit.id);
     if (row) {
       row.preview.textContent = clip((item.who === "me" ? "You: " : "") + item.text);
-      row.time.textContent = "Now";
+      row.time.textContent = fmtRowTime(item.t);
     }
   }
 
