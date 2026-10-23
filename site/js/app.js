@@ -100,6 +100,15 @@ async function boot() {
   const status = await me();
   if (!status.user) await showAuth(); // 登录/注册成了才会接资料和云镜
   paintProfile(status.user);
+  startHeartbeat();
+}
+
+// ── 心跳：页面开着每 3 分钟 /ping 一次报活 ──
+// cron 只会替「心跳断了 7 分钟」的用户代打 NPC 开口；心跳停了就归服务器。
+function startHeartbeat() {
+  const beat = () => fetch("/ping", { method: "POST", keepalive: true }).catch(() => {});
+  beat();
+  setInterval(beat, 3 * 60_000);
 }
 
 // ── Me 页个人资料：用户名 + 头像（点行 → 选图 → 压成 128px webp dataURL 上传）──

@@ -29,6 +29,12 @@
     { "binding": "PUSHER", "service": "fluentchat-pusher" }
   ],
 
+  // 离线代打：每 5 分钟一期，先只给心跳断了 7 分钟以上的用户抽签；
+  // 消息写进 {user}/hist 镜像，推送通知（3c）之后接。
+  "triggers": {
+    "crons": ["*/5 * * * *"]
+  },
+
   // 让 .md 进包。它们会以 JS text 模块形式存在，Python 的 open() 读不到，
   // 所以 prompt 实际用的是 worker.py 里内联的那份（tools/gen_prompts.py 生成）。
   "rules": [

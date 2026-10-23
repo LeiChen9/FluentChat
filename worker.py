@@ -20,6 +20,7 @@ import json
 import re
 from workers import Response, WorkerEntrypoint, fetch as js_fetch
 from backend import auth
+from backend import cloud_npc
 from backend.common import (ENDPOINTS, _load_subs, _save_subs,
                             bind_worker_env, env_key, run_chain, vapid_pubkey)
 from backend.prompt_data import PROMPTS
@@ -44,6 +45,16 @@ def to_messages(unit: str, history: list[dict]) -> list[dict]:
 def read_prompt(name: str) -> str:
     """取 prompt 内容。种类与来源见 backend/prompt_data.py（tools/gen_prompts.py 生成）。"""
     return PROMPTS[name.removesuffix(".md")]
+
+
+# 离线代打的主动指令，与 site/js/live.js 的 PRO_REQ 同一份文案。
+# 真源在浏览器一侧（它管着在线时的主动开口），cron 这份是随行副本。
+PRO_REQ = (
+    "(Proactive turn. Nobody spoke just now: text me first like a friend would. "
+    "Pick up whatever we talked about recently or something happening in your day "
+    "right now. 1-2 short casual sentences. Not a meta-greeting, don't mention "
+    "that you haven't heard from me.)"
+)
 
 
 async def _auth_route(fn, request) -> Response:
@@ -219,6 +230,16 @@ class Default(WorkerEntrypoint):
                 return Response.json({"error": "请先登录"}, status=401)
             return await _hist_route(self.env, user, request)
 
+        # 心跳：页面开着每 3 分钟报到一次。cron 只代打给「心跳断了」的用户，
+        # 别跟浏览器自己的抽签叠着发。
+        if request.method == "POST" and path.endswith("/ping"):
+            if not user:
+                return Response.json({"error": "请先登录"}, status=401)
+            state = await cloud_npc.load_state(self.env, user)
+            state["lastSeen"] = cloud_npc.now_ms()
+            await cloud_npc.save_state(self.env, user, state)
+            return Response.json({"ok": True})
+
         # 个人资料：用户名 + 头像（dataURL 存 {user}/avatar.txt，前端直接贴 img.src）
         if request.method == "GET" and path.endswith("/profile"):
             if not user:
@@ -344,3 +365,93 @@ class Default(WorkerEntrypoint):
 
         # 只把 token 的名字返给前端，其余字段不带出去
         return Response.json({"token": data["name"], "model": MODEL})
+
+    # ── cron 每 5 分钟：替「页面已关」的用户代打主动消息（片 3b）────
+    # 流程：心跳判定 → contact.json（ASSETS，与浏览器同源）→ 云册抽签 →
+    #   调链生成 → 写 {user}/hist/{unit}.json 镜像。推送通知是片 3c：
+    #   pusher 解锁后接进来。浏览器上线时 openChat 的云端合流会把
+    #   消息摆回本地一册。
+    # workerd 的 scheduled 只传 controller 一个位置参数；rest 承接 (env, ctx)；env 与 fetch 同走 self.env
+    async def scheduled(self, controller, *rest):
+        env = self.env
+        bind_worker_env(env)
+        auth.bind_r2(env)
+        print("[cron] scheduled tick begins")
+        now = cloud_npc.now_ms() / 1000.0
+        try:
+            obj = await env.DATA.get("users.json")
+            raw = await obj.text() if obj is not None else "{}"
+            users = json.loads(raw)
+        except Exception as e:
+            print(f"[cron] users.json read failed: {type(e).__name__}: {e}")
+            users = {}
+        if not isinstance(users, dict):
+            users = {}
+
+        offline = []
+        for user in users:
+            state = await cloud_npc.load_state(env, user)
+            seen = state.get("lastSeen")
+            if not (isinstance(seen, (int, float)) and 0 < seen < now * 1000 - cloud_npc.OFFLINE_MS):
+                continue  # 心跳活着（在线）或从未登录 → 浏览器自己管
+            offline.append(user)
+            ledgers = state.get("ledger") if isinstance(state.get("ledger"), dict) else {}
+            eng = state.get("eng") if isinstance(state.get("eng"), dict) else {}
+            hits = 0
+            for unit in PERSONAS:
+                if not unit.startswith("persona-"):
+                    continue
+                # 画像真源是 contact.json（ASSETS 与浏览器同一份文件）
+                contact = None
+                try:
+                    res = await env.ASSETS.fetch(
+                        f"https://assets.local/assets/contacts/{unit.removeprefix('persona-')}/contact.json")
+                    contact = await res.json() if res.ok else None
+                except Exception:
+                    pass
+                if not isinstance(contact, dict):
+                    continue
+                led = ledgers.get(unit)
+                led = led if isinstance(led, dict) else {}
+                # 云册账本条目规整天界：跨天/空账一律当日 0 起步（date 缺失
+                # 会让 pick 的次日重置永远糊着 null）
+                today = cloud_npc.day_stamp(now)
+                if led.get("date") != today:
+                    led = {"date": today, "sent": 0}
+                e = eng.get(unit)
+                e = (e if isinstance(e, (int, float)) else cloud_npc.ENG_DEFAULT) * cloud_npc.ENG_DECAY
+                # 命中先记账：生成失败也不重抽（不浪费名额，同浏览器的重试语义）
+                if not cloud_npc.pick_proactive(contact, led, e, now):
+                    eng[unit] = e
+                    continue
+                ledgers[unit] = {"date": today, "sent": int(led.get("sent") or 0) + 1,
+                                 "lastAt": cloud_npc.now_ms()}
+                eng[unit] = e
+                hits += 1
+                await self._proactive(env, user, unit, contact)
+
+            await cloud_npc.save_state(env, user, {**state, "ledger": ledgers, "eng": eng})
+        if offline:
+            print(f"[cron] offline={offline}")
+
+    # 离线代打的生成与落库。链上任何一层失败就整个放弃本条：名额已扣，
+    # 别让半成品消息写进镜像。
+    async def _proactive(self, env, user: str, unit: str, contact: dict) -> None:
+        try:
+            obj = await env.DATA.get(f"{user}/hist/{unit}.json")
+            hist = json.loads(await obj.text()) if obj is not None else []
+            if not isinstance(hist, list):
+                hist = []
+            msgs = to_messages(unit, sanitize_history(hist))
+            msgs.append({"role": "user", "content": PRO_REQ})
+            out = await run_chain(msgs)
+            text = out.get("content", "")
+        except Exception:
+            return  # 名额已扣；下一天/下一 tick 再说
+        if not text.strip():
+            return
+        # 落库保全量（t 是云端合流的排序键，prompt 才用清洗版）
+        hist.append({"who": "ai", "text": text.strip(), "t": cloud_npc.now_ms()})
+        await env.DATA.put(
+            f"{user}/hist/{unit}.json",
+            json.dumps(hist[-HIST_MAX_ITEMS:], ensure_ascii=False))

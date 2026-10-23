@@ -293,3 +293,13 @@ npx wrangler deploy                  # 改了 site/ 必须部署，workers.dev �
 - app.js：paintProfile（boot 时并行刷）、头像压图管线（img.decode → OffscreenCanvas cover-crop 128 → webp 0.85 / png 兜底 → FileReader dataURL → PUT）；登出 reload。
 - wrangler dev 实测：PUT/GET 头像往返、超界 400、未登录 401、logout 后 401 全口径过。
 
+## 离线代打（3a+3b，2026-10-23）
+- 心跳：`POST /ping`（登录路由）在 `{user}/state.json` 记 lastSeen；前端 startHeartbeat 每 3 分钟一拍。页面关/挂 → 7 分钟（OFFLINE_MS）后 cron 接管。
+- `backend/cloud_npc.py`：纯函数抽签 `pick_proactive`（perDay/engagement衰减/东八区 windows/offline 表哑/劣数据兜底）+ 云册 load/save；8 类边界单测全绿（抓出 led 形状未校验的真 bug）。
+- worker.py `scheduled`（*/5s 一期；同人 sent+1 lastAt 记账、生成失败不回补名额；date 规整当日防 quota 漏洞）。部署签名学：workerd scheduled 只传 controller，env 走 self.env、签名挂 *rest 才不炸。
+- `_proactive`：读 `{user}/hist/{unit}.json` → to_messages 清洗版 + PRO_REQ 同件文案 → run_chain → 全量（带 t）写回镜像。
+- ASSETS 拉画像：scheduled 里 `env.ASSETS.fetch("https://assets.local/...")` 可用；与浏览器同一 contact.json 真源。
+- 前端 openChat 合流：本地非空也拉镜像，`who|text|t` 去重、t 升序滑入（stable sort，legacy 无 t 沉底）。
+- 本地验证：在线 skip / 离线整链 / 读写账本 / .dev.vars 同步自 .env（chain_ready=6）；本地真命中（.key 全齐后）：sent=3/lastAt/真实模型气泡两条带 t 落镜像。date=null 漏洞线上首命中复核。
+- 已知差异：云册与浏览器册不同本（离线期各记各的，一天总主动频率可超浏览器单册）；推送通知属 3c 未接。
+

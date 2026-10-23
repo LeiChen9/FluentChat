@@ -797,17 +797,24 @@ export function initChat({ show, back }) {
     setReady(false);
 
     // 把上次的聊天记录摆回来（含复盘卡片），别每次都是白纸一张。
-    // 本机没有历史时从云端镜像接：换设备/清缓存后能接上，登录同一账号的人
-    // 拉回自己名下这份（页开着本地为准，云端只在本地空时补位）
+    // 本机有的话本地为准，但云端总得拉一面：离线代打（cron 写的 {
+    // user}/hist 镜像）要合流回本地主档，所以改成永远合，而不是
+    // 「本地空才补位」。按 who|text|t 去重，t 升序滑入本地（浏览器
+    // sort 稳定，旧数据没 t 的按原位排在最前）。
     hist = loadHist(u.id);
-    if (!hist.length) {
+    {
+      const key = (i) => `${i.kind || "b"}|${i.who}|${i.text}|${i.t ?? ""}`;
       try {
         const res = await fetch(`/hist/${u.id}`);
         if (res.ok) {
           const arr = await res.json();
           if (Array.isArray(arr) && arr.length) {
-            hist = arr.slice(-HIST_MAX);
-            try { localStorage.setItem(HIST_KEY + u.id, JSON.stringify(hist)); } catch {}
+            const seen = new Set(hist.map(key));
+            const extra = arr.filter((c) => c && c.who && !seen.has(key(c)));
+            if (extra.length) {
+              hist = [...hist, ...extra].sort((a, b) => (a.t ?? 0) - (b.t ?? 0)).slice(-HIST_MAX);
+              try { localStorage.setItem(HIST_KEY + u.id, JSON.stringify(hist)); } catch {}
+            }
           }
         }
       } catch {}
