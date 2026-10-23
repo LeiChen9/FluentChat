@@ -271,4 +271,5 @@ npx wrangler deploy                  # 改了 site/ 必须部署，workers.dev �
 - 未读来源：deliverProactive 后台落盘分支每条 +1（内存 Map，reflush 即清）；openChat 进对话即清零该行；页内气泡不计数。
 - paintDots 挂在每分钟 proactive tick 上，状态漂移 60 秒内跟上；初始建行即刷一遍。
 - CSS：app.css 新增 .row__avwrap/.row__name/.row__name .dot/.row__badge（#fa5151，--bg 描边 1.5px 破卡片感）。
+- 底部 Chats tab 同款角标：unread 汇总即 tab 徽章数，setBadge 顺带刷（增/清都流经它）；CSS .tab 加 position:relative，.tab__badge 用 --bar-bg 描边贴在图标右上。页面加载时由建行后首刷一并归零。
 

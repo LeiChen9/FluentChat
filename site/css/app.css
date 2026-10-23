@@ -261,8 +261,30 @@ button { font: inherit; color: inherit; }
   transition: color 240ms var(--soft);
 }
 
-.tab[aria-selected="true"] { color: var(--accent); }
-.tab[aria-selected="true"] svg { animation: tabPop 420ms var(--spring); }
+/* Chats 未读总角标：盖在图标右上，微信式 */
+.tab {
+  position: relative;
+}
+
+.tab__badge {
+  position: absolute;
+  left: calc(50% + 6px);
+  top: 6px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  border: 2px solid var(--bar-bg);
+  box-sizing: border-box;
+  background: #fa5151;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 12px;
+  text-align: center;
+}
+
+.tab[aria-selected="true"] { color: var(--accent); }.tab[aria-selected="true"] svg { animation: tabPop 420ms var(--spring); }
 .tab:active svg { transform: scale(.86); }
 
 /* 没做的功能：置灰，不可点 */

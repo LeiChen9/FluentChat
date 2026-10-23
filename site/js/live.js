@@ -141,12 +141,19 @@ export function initChat({ show, back }) {
   let people = [];
   // 未读计数（内存）：后台落盘的消息条数，进对应对话清零。刷新即清空
   const unread = new Map();
-  function setBadge(p) {
-    const row = rowOf.get(p.id);
-    if (!row) return;
-    const n = unread.get(p.id) || 0;
-    row.badge.hidden = !n;
-    row.badge.textContent = n;
+  // 各行总数顺带落在底部 Chats 图标上（微信式）
+  const tabBadge = document.querySelector('.tab[data-view="chats"]')
+    ?.appendChild(Object.assign(document.createElement("i"), { className: "tab__badge", hidden: true }));
+  function setBadge(id) {
+    const row = rowOf.get(id);
+    if (row) {
+      const n = unread.get(id) || 0;
+      row.badge.hidden = !n;
+      row.badge.textContent = n;
+    }
+    let total = 0;
+    for (const n of unread.values()) total += n;
+    if (tabBadge) { tabBadge.hidden = !total; tabBadge.textContent = total; }
   }
   // 状态随时段漂移，列表行的名字点每分钟跟着 rhythm 刷一次
   function paintDots() {
@@ -522,7 +529,7 @@ export function initChat({ show, back }) {
     }
     // 没看着的消息就是未读
     unread.set(p.id, (unread.get(p.id) || 0) + 1);
-    setBadge(p);
+    setBadge(p.id);
   }
 
   // ── 历史（本地留存，下次打开还在） ──
@@ -758,7 +765,7 @@ export function initChat({ show, back }) {
     teardown();
     unit = u;
     unread.delete(u.id); // 进对话 = 看过了
-    setBadge(u);
+    setBadge(u.id);
 
     // 头像直接用 persona 自己的照片，不再靠猫图染色
     avImg.src = u.avatar;
