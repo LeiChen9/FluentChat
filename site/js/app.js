@@ -200,9 +200,11 @@ async function enablePush() {
       : { endpoint: sub.endpoint, keys: { p256dh: b64u(sub.getKey("p256dh")), auth: b64u(sub.getKey("auth")) } };
     setNote("Registering with server…");
     res = await fetch("/push/subscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(subJson) });
+    // 先试 JSON（后端错误是 {"error": "..."}），解不出再回退 raw 文本
     if (!res.ok) {
-      const raw = await res.text();
-      throw new Error(`subscribe ${res.status} ${raw.replace(/<[^>]*>/g, "").slice(0, 200)}`);
+      let detail;
+      try { detail = (await res.json()).error; } catch { detail = (await res.text()).slice(0, 200); }
+      throw new Error(`subscribe ${res.status} ${detail}`);
     }
     setNote("On — synced with server");
   } catch (e) {
