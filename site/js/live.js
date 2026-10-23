@@ -91,15 +91,12 @@ export function initChat({ show, back }) {
   let typingEl = null;   // 「正在输入…」气泡
   let hist = [];         // 当前 Unit 的历史（内存 + localStorage 双写）
 
-  // 回复节奏：我方消息先排队，按 persona 作息抽样延迟到点才真发
-  let outQueue = [];     // 等待回复期间攒下的我方消息，到点一起发
-  let replyTimer = 0;    // 到点发送的定时器
-  let typingTimer = 0;   // 较长延迟里「临回前 5 秒」才摆 typing
+  // 回复节奏：状态挂在 persona 上（replies），切走聊天页也不打断。
+  const replies = new Map(); // persona.id -> { texts, delay, gen, retry, ready, text, wait, used, req }
   let burstArmed = 0;    // 本条回复起角色还能补几轮
   let burstTimer = 0;    // 补话定时器
   let statusTimer = 0;   // 状态栏 / 苏醒检查的轮询
   let lastAiAt = 0;      // AI 上一轮回话落地的时刻；之后不久的追问 = 话题正热
-  let chatRun = false;   // /chat 在途：上一条回复落地后再排下一条，别并发抢顺序
 
   // 挂断后的复盘
   let reviewCard = null;
@@ -287,111 +284,122 @@ export function initChat({ show, back }) {
     setChatState(STATUS_LABEL[statusOf(unit, new Date())]);
   }
 
-  // 空格唤醒已取消：角色不主动开口，用户先说话，回话交给 outQueue 节奏。
+  // 空格唤醒已取消：角色不主动开口，用户先说话。
 
-  // 按作息抽一个延迟到点才发；话题正热（AI 刚回过话不久）则直接秒回，
-  // 小概率「角色走开」等一阵再回；较长的干等期间顶栏显示状态而非 typing。
-  function armReply() {
-    if (!unit) return;
-    if (mode === "call") { // 通话里不回话，挂断了再续
-      replyTimer = setTimeout(armReply, 60000);
-      return;
-    }
-    if (chatRun) return; // 上一条 /chat 还在赶，落地后 drip 尾部再排
-    const warm = Date.now() - lastAiAt < WARM_WINDOW;
-    const delay = nextReplyDelay(unit, new Date(), warm);
-    if (delay < 0) { // busy 抽不中：挂起，每分钟看一眼状态，漂回 active 再续
-      replyTimer = setTimeout(armReply, 60000);
-      showStatus();
-      return;
-    }
-    replyTimer = setTimeout(fireReply, delay * 1000);
-    if (delay > 5) {
-      typingTimer = setTimeout(() => {
-        typingTimer = 0;
-        if (replyTimer) showTyping(); // 临回前 5 秒才像真人一样「正在输入」
-      }, (delay - 5) * 1000);
-    } else {
-      showTyping();
-    }
+  // 回复节奏（rhythm.js 的作息抽样 + 后台生成两条线并行）：
+  // 消息一落 localStorage 立刻后台调 /chat 备好文案，作息抽样延迟到点、
+  // 文案也就绪后，才按文案长度摆 typing（45ms/字，真人速度）并逐条落气泡。
+  // 状态挂在 replies（persona 归属）：切走聊天页不打断，人不在就交后台落盘。
+  const THINK_MS = 45;   // 打字速度：毫秒/字（100 字 ≈ 4.5 秒）
+  const THINK_MIN = 1200;
+  const THINK_MAX = 9000;
+
+  function beginReply(u, directive) {
+    let st = replies.get(u.id);
+    if (st) return st;
+    st = { texts: [], delay: 0, gen: null, retry: 0, ready: false, text: "", wait: 0, used: 0, req: directive || "" };
+    replies.set(u.id, st);
+    scheduleDelay(u, st);
+    queueMicrotask(() => startGen(u, st)); // 留一拍：同栈里先把本条话计入，used 才锁得住带了几条
+    return st;
   }
 
-  function fireReply() {
-    replyTimer = 0;
-    if (typingTimer) { clearTimeout(typingTimer); typingTimer = 0; }
-    const u = unit;
-    const texts = outQueue;
-    outQueue = [];
-    if (!u || !texts.length) { showStatus(); return; }
-    burstArmed += burstOf(u).extra; // 从这条回复起，话痨角色有概率接着说
-    noteReply(u, new Date()); // 张嘴回话 = 短暂真在线，升 active 锁 glow 分钟
-    chatRun = true;
-    showTyping();
-    // 文本回复走 /chat（模型容灾链）：排进队的话已 pushHist，历史里看得到
-    genChat(u).then((text) => {
-      chatRun = false;
-      if (unit === u && mode === "text" && !reviewCard) {
-        lastAiAt = Date.now(); // 回话落地 = 话题正热的参照点
-        const parts = sliceReply(text);
-        let i = 0;
-        const drip = () => {
-          if (i >= parts.length) {
-            hideTyping(); showStatus(); examBurst();
-            if (outQueue.length && !replyTimer) armReply(); // 兜底接续：别让后面的队列饿死
-            return;
-          }
-          if (unit !== u || mode !== "text") return; // 已换人/拆线：链条就地终止
-          if (i > 0) showTyping();
-          setTimeout(() => {
-            if (unit !== u || mode !== "text") return; // 到点前又换了人
-            hideTyping();
-            addBubble("ai", parts[i]);
-            pushHist({ who: "ai", text: parts[i] });
-            i++;
-            drip();
-          }, i === 0 ? 0 : 1200 + Math.random() * 1800);
-        };
-        drip();
-      } else {
-        deliverProactive(u, text); // 人已经不在：照后台路径落盘 + 刷预览
-      }
-    }).catch(() => {
-      chatRun = false;
-      console.warn("reply /chat failed");
-      // 生成失败不当场放弃：队列还回去，缓 8-30 秒按原节奏重试
-      if (u === unit && mode === "text" && !reviewCard) {
-        outQueue = texts.concat(outQueue);
-        hideTyping();
-        if (!replyTimer) replyTimer = setTimeout(armReply, 8000 + Math.random() * 22000);
-        showStatus();
-      }
+  function scheduleDelay(u, st) {
+    if (st.delay) return;
+    const warm = Date.now() - lastAiAt < WARM_WINDOW;
+    const delay = nextReplyDelay(u, new Date(), warm);
+    if (delay < 0) { // busy 抽不中：挂起，每分钟看一眼状态，漂回 active 再续
+      st.delay = setTimeout(() => { st.delay = 0; scheduleDelay(u, st); }, 60000);
+      return;
+    }
+    if (delay > 0) st.delay = setTimeout(() => { st.delay = 0; proceedReply(u); }, delay * 1000);
+    proceedReply(u); // delay=0（话题正热秒回）：文案就绪就立刻进 typing
+  }
+
+  function startGen(u, st) {
+    if (st.gen || st.ready) return;
+    st.used = st.texts.length; // 这次生成带上的是几条发言（packFor 读 localStorage）
+    st.gen = genChat(u, st.req).then((text) => {
+      st.gen = null; st.text = text; st.ready = true;
+      if (!st.delay && !st.wait) proceedReply(u);
+    }, () => { // 生成失败不当场放弃：队列还在，缓 8-30 秒按原节奏重试
+      st.gen = null;
+      st.retry = setTimeout(() => { st.retry = 0; startGen(u, st); }, 8000 + Math.random() * 22000);
     });
   }
 
+  // 两个前置（延迟到点 + 文案就绪）都过完才进 typing；通话里不回话，挂断再续
+  function proceedReply(u) {
+    const st = replies.get(u.id);
+    if (!st || st.delay || st.gen || st.retry || !st.ready) return;
+    if (unit === u && mode === "call") {
+      st.delay = setTimeout(() => { st.delay = 0; proceedReply(u); }, 60000);
+      return;
+    }
+    noteReply(u, new Date()); // 张嘴回话 = 短暂真在线，升 active 锁 glow 分钟
+    if (unit === u && mode === "text" && !reviewCard) {
+      showTyping();
+      const ms = Math.min(Math.max(st.text.length * THINK_MS, THINK_MIN), THINK_MAX);
+      st.wait = setTimeout(() => { st.wait = 0; deliverReply(u, st); }, ms);
+    } else {
+      deliverReply(u, st); // 人已经不在：后台直接落盘
+    }
+  }
+
+  // 文案就绪落气泡：开着本对话按节奏逐条出（多条间再摆 typing），没开着走后台路径
+  function deliverReply(u, st) {
+    const text = clean(st.text);
+    replies.delete(u.id);
+    if (!text) return;
+    if (unit !== u || mode !== "text" || reviewCard) { deliverProactive(u, text); return; }
+    lastAiAt = Date.now(); // 回话落地 = 话题正热的参照点
+    if (st.req !== BURST_REQ) burstArmed += burstOf(u).extra; // 补话的回话别给自己续弹药
+    const parts = sliceReply(text).filter(Boolean);
+    let i = 0;
+    const drip = () => {
+      if (i >= parts.length) {
+        hideTyping(); showStatus();
+        // 生成期间用户又开了口：剩下的照常流程再回一轮（话没丢，话题正热秒回）
+        const extra = st.texts.length - st.used;
+        if (extra > 0) { const st2 = beginReply(u); for (let k = 0; k < extra; k++) st2.texts.push(""); }
+        examBurst(u);
+        return;
+      }
+      if (i > 0) showTyping();
+      setTimeout(() => {
+        if (unit !== u || mode !== "text") { // 到点前又换了人：剩余的走后台落盘
+          for (; i < parts.length; i++) deliverProactive(u, parts[i]);
+          return;
+        }
+        hideTyping();
+        addBubble("ai", parts[i]);
+        pushHist({ who: "ai", text: parts[i] });
+        i++;
+        drip();
+      }, i === 0 ? 0 : 1200 + Math.random() * 1800);
+    };
+    drip();
+  }
+
+  // 拆掉某人的在途回复（Reset 清历史时用）：定时器全清，状态退场
+  function cancelReply(u) {
+    const st = replies.get(u.id);
+    if (!st) return;
+    replies.delete(u.id);
+    for (const t of [st.delay, st.retry, st.wait]) if (t) clearTimeout(t);
+  }
+
   // 角色补话：回复落地后按「性格概率」隔几秒再跟一条，让模型自己续一轮。
-  function examBurst() {
-    if (mode !== "text" || !unit || reviewCard || !burstArmed || burstTimer || chatRun) return;
-    if (Math.random() >= burstOf(unit).chance) { burstArmed = 0; return; }
+  function examBurst(u) {
+    if (!u || !burstArmed || burstTimer) return;
+    if (Math.random() >= burstOf(u).chance) { burstArmed = 0; return; }
     burstArmed--;
     burstTimer = setTimeout(() => {
       burstTimer = 0;
-      const u = unit;
-      if (!u) return;
       if (statusOf(u, new Date()) === "offline") return; // 睡着的人不补话
+      if (unit === u && mode !== "text") return; // 就在这页还打着电话：别 texting 抢戏
+      beginReply(u, BURST_REQ); // 走同一套节奏机：延迟 + 后台生成，切走照样落盘
       noteReply(u, new Date()); // 想开口先升 active：状态和消息保持一致
-      chatRun = true;
-      showTyping();
-      genChat(u, BURST_REQ).then((text) => {
-        chatRun = false;
-        if (unit === u && mode === "text" && !reviewCard) {
-          lastAiAt = Date.now();
-          for (const t of sliceReply(text)) { addBubble("ai", t); pushHist({ who: "ai", text: t }); }
-          showStatus();
-          if (outQueue.length && !replyTimer) armReply();
-        } else {
-          deliverProactive(u, text);
-        }
-      }).catch(() => { chatRun = false; showStatus(); });
     }, 2000 + Math.random() * 6000);
   }
 
@@ -422,8 +430,8 @@ export function initChat({ show, back }) {
 
   async function fireProactive(p, retried) {
     if (unit === p) {
-      // 就在这个对话页：用户话已在途或正在通话时别抢话
-      if (mode !== "text" || outQueue.length || replyTimer) return;
+      // 就在这个对话页：回复已在途（在生成/在等）时别抢话
+      if (mode !== "text" || replies.has(p.id)) return;
     }
     noteReply(p, new Date()); // 想开口先升 active
     const text = clean(await genProactive(p, retried));
@@ -761,14 +769,10 @@ export function initChat({ show, back }) {
     connectSeq++; // 让还在等 token 的 connect 作废
     if (reviewIdle) { clearTimeout(reviewIdle); reviewIdle = null; }
     if (reviewCap) { clearTimeout(reviewCap); reviewCap = null; }
-    if (replyTimer) { clearTimeout(replyTimer); replyTimer = 0; }
-    if (typingTimer) { clearTimeout(typingTimer); typingTimer = 0; }
-    if (burstTimer) { clearTimeout(burstTimer); burstTimer = 0; }
+    // 在途的回复不拆（replies 挂在 persona 上）：延迟/生成/typing 照常走完，
+    // 人不在就交 deliverProactive 后台落盘 + 刷列表预览。
     if (statusTimer) { clearInterval(statusTimer); statusTimer = 0; }
-    outQueue = [];
     burstArmed = 0;
-    lastAiAt = 0;
-    chatRun = false;
     stopMic();
     stopPlayback();
     if (ws) { try { ws.close(); } catch {} }
@@ -859,7 +863,6 @@ export function initChat({ show, back }) {
     stopMic();
     stopPlayback();
     flushPending(); // 断线时攒着的话先落下来，别丢
-    chatRun = false;
     ws = null;
     const wasCall = mode === "call";
     mode = "text";
@@ -868,7 +871,9 @@ export function initChat({ show, back }) {
     if (reviewCard) { finishReview(); return; }
     showStatus(); // 顶栏回到作息状态
     if (wasCall) setChatState("Call dropped");
-    if (outQueue.length && !replyTimer) armReply();
+    // 通话期间挂着的文本回复立刻续上：挂断回文本模式照常回话
+    const st = replies.get(u.id);
+    if (st && st.delay) { clearTimeout(st.delay); st.delay = 0; proceedReply(u); }
   }
 
   // ── 收消息 ──
@@ -1038,6 +1043,7 @@ export function initChat({ show, back }) {
     const u = unit;
     if (!u) return;
     if (!confirm("Clear this chat? The history can't be recovered.")) return;
+    cancelReply(u); // 在途回复一起退场，别等清空后落进白纸
     teardown();
     try { localStorage.removeItem(HIST_KEY + u.id); } catch {}
     openChat(u); // unit 已被 teardown 置空，不会命中「同一个还开着」的早退分支
@@ -1068,9 +1074,8 @@ export function initChat({ show, back }) {
       send({ realtimeInput: { text } }); // 通话里打字不过节奏，照旧直发
       return;
     }
-    outQueue.push(text);    // 文字模式：先排队，按作息到点才走 /chat
-    if (replyTimer || chatRun) return; // 已在等回复/生成：排队等一起回，不清节奏
-    armReply();
+    // 文字模式：话已 pushHist，立刻后台备料；作息延迟照走，到点文案也就绪才 typing
+    beginReply(unit).texts.push("");
   });
 
   return {
