@@ -166,51 +166,62 @@ boot();
 setupProfileUI();
 
 function loadPeople() {
-  loadContacts().then((people) => {
-  findPersona = (unit) => people.find((p) => p.id === unit) || null;
-  const contactList = document.getElementById("contact-list");
-  const statusBits = [];
-  for (const p of [...people].sort((a, b) => a.name.localeCompare(b.name))) {
-    const li = document.createElement("li");
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "row";
-    btn.innerHTML =
-      `<img class="row__av" src="${p.avatar}" alt="">` +
-      `<span class="row__text"><b>${p.name}</b><i class="row__status"><span class="dot"></span><span class="st-label"></span></i></span>`;
-    btn.addEventListener("click", () => chat.open(p));
-    li.append(btn);
-    contactList.append(li);
-    statusBits.push({ p, dot: btn.querySelector(".dot"), label: btn.querySelector(".st-label") });
-  }
+  const build = (people) => {
+    findPersona = (unit) => people.find((p) => p.id === unit) || null;
+    const contactList = document.getElementById("contact-list");
+    const statusBits = [];
+    contactList.replaceChildren(); // 重建时清掉缓存版再画网络版
+    for (const p of [...people].sort((a, b) => a.name.localeCompare(b.name))) {
+      const li = document.createElement("li");
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "row";
+      btn.innerHTML =
+        `<img class="row__av" src="${p.avatar}" alt="">` +
+        `<span class="row__text"><b>${p.name}</b><i class="row__status"><span class="dot"></span><span class="st-label"></span></i></span>`;
+      btn.addEventListener("click", () => chat.open(p));
+      li.append(btn);
+      contactList.append(li);
+      statusBits.push({ p, dot: btn.querySelector(".dot"), label: btn.querySelector(".st-label") });
+    }
 
-  // 状态随时段漂移（active/away/busy/offline → 绿/黄/红/灰），进 tab 时刷
-  paintStatus = () => {
-    for (const b of statusBits) {
-      const st = statusOf(b.p, new Date());
-      b.dot.className = `dot dot--${st}`;
-      b.label.textContent = STATUS_LABEL[st];
+    // 状态随时段漂移（active/away/busy/offline → 绿/黄/红/灰），进 tab 时刷
+    paintStatus = () => {
+      for (const b of statusBits) {
+        const st = statusOf(b.p, new Date());
+        b.dot.className = `dot dot--${st}`;
+        b.label.textContent = STATUS_LABEL[st];
+      }
+    };
+    paintStatus();
+
+    const momentList = document.getElementById("moment-list");
+    momentList.replaceChildren();
+    for (const p of people) {
+      for (const m of p.moments) {
+        const card = document.createElement("article");
+        card.className = "moment";
+        card.innerHTML =
+          `<img class="moment__av" src="${p.avatar}" alt="">` +
+          `<div class="moment__body">` +
+          `<b class="moment__name">${p.name}</b>` +
+          `<p class="moment__text"></p>` +
+          `<i class="moment__time">${m.time}</i>` +
+          `</div>`;
+        card.querySelector(".moment__text").textContent = m.text;
+        momentList.append(card);
+      }
     }
   };
-  paintStatus();
 
-  const momentList = document.getElementById("moment-list");
-  for (const p of people) {
-    for (const m of p.moments) {
-      const card = document.createElement("article");
-      card.className = "moment";
-      card.innerHTML =
-        `<img class="moment__av" src="${p.avatar}" alt="">` +
-        `<div class="moment__body">` +
-        `<b class="moment__name">${p.name}</b>` +
-        `<p class="moment__text"></p>` +
-        `<i class="moment__time">${m.time}</i>` +
-        `</div>`;
-      card.querySelector(".moment__text").textContent = m.text;
-      momentList.append(card);
-    }
-  }
-});
+  // 缓存优先：上次建好的整队人马直接开画，冷启动不再盯着空黑屏
+  let cached = null;
+  try { cached = JSON.parse(localStorage.getItem("crowd") || "null"); } catch {}
+  if (Array.isArray(cached) && cached.length) build(cached);
+  loadContacts().then((people) => {
+    try { localStorage.setItem("crowd", JSON.stringify(people)); } catch {}
+    build(people); // 网络版追上来为准
+  });
 }
 
 for (const tab of tabs) {

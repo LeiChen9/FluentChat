@@ -33,8 +33,9 @@ function parseMoments(md) {
 
 // 顺序按 IDS；缺文件不中断，只少一个字段
 export async function loadContacts() {
-  const people = [];
-  for (const id of IDS) {
+  // 并行抓取：之前 for-await 串行，6 个请求排队,慢网下首屏黑屏好些秒；
+  // Promise.all 一轮 RTT 就齐。
+  const people = await Promise.all(IDS.map(async (id) => {
     const dir = `${DIR}${id}/`;
     const d = await fetchJson(dir + "contact.json");
     const p = d || {};
@@ -43,7 +44,7 @@ export async function loadContacts() {
     p.moments = parseMoments(await fetchText(dir + "moments.md"));
     // 节奏模块仍走 p.schedule 读 hours/base/burst/glow
     p.schedule = { hours: p.hours, base: p.base, burst: p.burst, glow: p.glow, reply: p.reply, activeChance: p.activeChance || { away: 0.2, busy: 0.1 } };
-    people.push(p);
-  }
+    return p;
+  }));
   return people;
 }
