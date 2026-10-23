@@ -1079,18 +1079,20 @@ export function initChat({ show, back }) {
   // 手势时机不对时宁可无声也不把通话卡死）。
   let ringback = null;
 
-  // 彩铃音频预取：开屏就在后台把 mp3 备成本地 Blob，拨号那刻秒响。
-  // 等「connecting 好久才出铃声」的根因就是把 5MB mp3 留到拨号那刻才从
-  // 网络现拉（手机代理/弱网下明显拖后）。
+  // 彩铃音频预取：开屏就在后台把音频备成本地 Blob，拨号那刻秒响。
+  // 推迟 3 秒再拉：开屏的那波并行请求（列表/头像/云端合流）别被它挤。
+  // 切片档：10 秒 HE-AAC 64k mono ≈ 86KB，靠 Audio.loop 循环兜完整回铃。
   let ringbackUrl = null;
-  fetch("assets/DialMusic.mp3")
-    .then((r) => (r.ok ? r.blob() : null))
-    .then((blob) => { if (blob) ringbackUrl = URL.createObjectURL(blob); })
-    .catch(() => {}); // 预取败了不打紧，拨号时退回网络流式路径
+  setTimeout(() => {
+    fetch("assets/DialMusic.m4a")
+      .then((r) => (r.ok ? r.blob() : null))
+      .then((blob) => { if (blob) ringbackUrl = URL.createObjectURL(blob); })
+      .catch(() => {});
+  }, 3000);
 
   function startRingback() {
     stopRingback(); // 连拨以防上一次的尾巴还在
-    ringback = new Audio(ringbackUrl || "assets/DialMusic.mp3");
+    ringback = new Audio(ringbackUrl || "assets/DialMusic.m4a");
     ringback.loop = true;
     ringback.volume = 0.55;
     ringback.play().catch(() => {});
