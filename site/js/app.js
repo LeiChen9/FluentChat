@@ -93,14 +93,13 @@ function showAuth() {
   });
 }
 
-// 登录挡住一切数据装载：聊天列表、联系人、朋友圈都要会话才有意义。
+// 登录只挡"云侧"的活（资料、镜像）。本地联系人零网络，先画出来，
+// 别让首屏干等一次 /me 往返（1-2 秒白屏）。没登录的话覆盖层随后盖上。
 async function boot() {
-  const status = await me();
-  if (!status.user) {
-    await showAuth(); // 登录/注册成了才会往下走
-  }
-  paintProfile(status.user);
   loadPeople();
+  const status = await me();
+  if (!status.user) await showAuth(); // 登录/注册成了才会接资料和云镜
+  paintProfile(status.user);
 }
 
 // ── Me 页个人资料：用户名 + 头像（点行 → 选图 → 压成 128px webp dataURL 上传）──
@@ -114,10 +113,11 @@ function paintProfile(name) {
 }
 
 async function setupProfileUI() {
-  const pick = document.getElementById("profile-row");
+  const avatar = document.getElementById("me-avatar");
   const fileEl = document.getElementById("avatar-file");
   const errEl = document.getElementById("profile-err");
-  pick.addEventListener("click", () => fileEl.click());
+  // 只有点头像圆圈才开选图器；整行不再绑点击（之前点哪里都弹选图,太吓人）
+  avatar.addEventListener("click", () => fileEl.click());
   fileEl.addEventListener("change", async () => {
     const file = fileEl.files[0];
     fileEl.value = ""; // 允许重复选同一张图
