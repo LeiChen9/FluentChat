@@ -139,6 +139,23 @@ export function initChat({ show, back }) {
     if (row) row.li.parentNode.prepend(row.li);
   }
   let people = [];
+  // 未读计数（内存）：后台落盘的消息条数，进对应对话清零。刷新即清空
+  const unread = new Map();
+  function setBadge(p) {
+    const row = rowOf.get(p.id);
+    if (!row) return;
+    const n = unread.get(p.id) || 0;
+    row.badge.hidden = !n;
+    row.badge.textContent = n;
+  }
+  // 状态随时段漂移，列表行的名字点每分钟跟着 rhythm 刷一次
+  function paintDots() {
+    const now = new Date();
+    for (const p of people) {
+      const row = rowOf.get(p.id);
+      if (row) row.dot.className = `dot dot--${statusOf(p, now)}`;
+    }
+  }
   loadContacts().then((list) => {
     people = list;
     const chatList = document.getElementById("chat-list");
@@ -148,8 +165,8 @@ export function initChat({ show, back }) {
       btn.type = "button";
       btn.className = "row";
       btn.innerHTML =
-        `<img class="row__av" src="${p.avatar}" alt="">` +
-        `<span class="row__text"><b>${p.name}</b><i></i></span>` +
+        `<span class="row__avwrap"><img class="row__av" src="${p.avatar}" alt=""><i class="row__badge" hidden></i></span>` +
+        `<span class="row__text"><b class="row__name">${p.name}<span class="dot"></span></b><i></i></span>` +
         `<span class="row__time">${p.time}</span>`;
       btn.addEventListener("click", () => openChat(p));
       li.append(btn);
@@ -158,11 +175,14 @@ export function initChat({ show, back }) {
         li: li,
         preview: btn.querySelector(".row__text i"),
         time: btn.querySelector(".row__time"),
+        dot: btn.querySelector(".row__name .dot"),
+        badge: btn.querySelector(".row__badge"),
       });
       rowOf.get(p.id).preview.textContent = lastLine(p.id) || "";
       const lastTalk = loadHist(p.id).filter((h) => h.who === "me" || h.who === "ai").at(-1);
       rowOf.get(p.id).time.textContent = lastTalk && lastTalk.t ? fmtRowTime(lastTalk.t) : p.time;
     }
+    paintDots();
     startProactive(); // 名单到齐才开始调度
   });
 
@@ -424,6 +444,7 @@ export function initChat({ show, back }) {
   function startProactive() {
     if (proTimer) return;
     proTimer = setInterval(() => {
+      paintDots();
       for (const p of proactiveTick(people, new Date())) fireProactive(p);
     }, PRO_MINUTE);
   }
@@ -499,6 +520,9 @@ export function initChat({ show, back }) {
       row.preview.textContent = clip(text);
       row.time.textContent = fmtRowTime(Date.now());
     }
+    // 没看着的消息就是未读
+    unread.set(p.id, (unread.get(p.id) || 0) + 1);
+    setBadge(p);
   }
 
   // ── 历史（本地留存，下次打开还在） ──
@@ -733,6 +757,8 @@ export function initChat({ show, back }) {
     if (unit === u) { show?.(); return; } // 同一个人：页面/连接/复盘都还热着，直接回去
     teardown();
     unit = u;
+    unread.delete(u.id); // 进对话 = 看过了
+    setBadge(u);
 
     // 头像直接用 persona 自己的照片，不再靠猫图染色
     avImg.src = u.avatar;

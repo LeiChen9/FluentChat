@@ -266,3 +266,9 @@ npx wrangler deploy                  # 改了 site/ 必须部署，workers.dev �
 - wrangler dev 复测：/health 200、/chat 502（本地无链 key，走通 backend 链）、跨包 import 正常。`/token` 实签本地网络外发不通（需部署环境验证），代码路径由同一 try 在 NameError 时期的 502 响应证明已执行。
 - **线上部署冒烟通过（2026-10-23）**：`wrangler deploy` → `fluentchat-api.luent-hat.workers.dev`。/health 200（has_key=true、chain_ready=6）；POST / 实签成功（unit-01 裸调 + persona-sam 带历史各持一个新 token）；/chat 实答（链上 command-a-plus-05-2026 回复）；unit 白名单 400、subscribe 缺参 400、/push/pubkey 200 均正常。重构收口。
 
+## 聊天列表状态点 + 未读角标（2026-10-23 后续）
+- Chat 列表每行：名字旁加 7px 状态点（复用 Contacts 的 dot--active/-away/-busy/-offline 与 statusOf），头像包进 .row__avwrap 并叠 .row__badge 角标（红底白字微信式，无未读隐藏）。
+- 未读来源：deliverProactive 后台落盘分支每条 +1（内存 Map，reflush 即清）；openChat 进对话即清零该行；页内气泡不计数。
+- paintDots 挂在每分钟 proactive tick 上，状态漂移 60 秒内跟上；初始建行即刷一遍。
+- CSS：app.css 新增 .row__avwrap/.row__name/.row__name .dot/.row__badge（#fa5151，--bg 描边 1.5px 破卡片感）。
+
