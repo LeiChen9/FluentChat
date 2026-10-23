@@ -146,6 +146,19 @@
       </ul>
     </section>
 
+    <!-- 通知偏好（仿 iOS 消息通知预览三档）。横幅要真的弹，前提是本机
+         已登记 Web Push —— 所以选某一档时顺带走一次订阅登记。 -->
+    <div class="sheet" id="notif-sheet" hidden>
+      <div class="sheet__card" role="dialog" aria-label="Notifications">
+        <b class="sheet__title">Banners</b>
+        <button class="sheet__opt" data-notif="off" type="button"><b>Off</b><i>No banners</i></button>
+        <button class="sheet__opt" data-notif="ticker" type="button"><b>Ticker only</b><i>Banner says who — not what</i></button>
+        <button class="sheet__opt" data-notif="preview" type="button"><b>Message preview</b><i>Banner shows the message text</i></button>
+        <button class="sheet__ghost" id="notif-sheet-close" type="button">Cancel</button>
+      </div>
+    </div>
+
+
   </main>
 
   <!-- ── 登录/注册覆盖层：未登录时遮住全部视图，成了立刻撤走 ── -->

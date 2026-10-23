@@ -4,7 +4,7 @@ self.addEventListener("push", (e) => {
   let d = {};
   try { d = e.data ? e.data.json() : {}; } catch {}
   e.waitUntil(self.registration.showNotification(d.title || "FluentChat", {
-    body: d.body || "You have a new message.",
+    body: d.body || "New message for you.",
     tag: d.unit || "fluentchat", // 同一会话连着来只刷横幅，不堆角标
     renotify: true,
     data: { unit: d.unit || "" },

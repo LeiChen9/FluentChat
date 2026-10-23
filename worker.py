@@ -315,10 +315,27 @@ class Default(WorkerEntrypoint):
             au = str(keys.get("auth") or "")
             if not endpoint.startswith("https://") or not dh or not au:
                 return Response.json({"error": "订阅缺 endpoint/keys(p256dh,auth)"}, status=400)
-            subs = [dict(s) for s in await _load_subs(self.env) if s.get("endpoint") != endpoint][:19]
+            subs = [dict(s) for s in await _load_subs(self.env, user) if s.get("endpoint") != endpoint][:19]
             subs.append({"endpoint": endpoint, "keys": {"p256dh": dh, "auth": au}})
-            await _save_subs(self.env, subs)
+            await _save_subs(self.env, user, subs)
             return Response.json({"ok": True, "count": len(subs)})
+
+        # ── 通知偏好：iOS 消息设置三档 ──
+        # off = 完全不提醒；ticker = 只提示有消息（不带正文）；preview = 横幅带内容。
+        if request.method == "PUT" and path.endswith("/prefs"):
+            if not user:
+                return Response.json({"error": "请先登录"}, status=401)
+            try:
+                body = await request.json()
+            except Exception:
+                return Response.json({"error": "请求体不是合法 JSON"}, status=400)
+            notif = body.get("notif")
+            if notif not in ("off", "ticker", "preview"):
+                return Response.json({"error": "notif 只收 off/ticker/preview"}, status=400)
+            state = await cloud_npc.load_state(self.env, user)
+            state["notif"] = notif
+            await cloud_npc.save_state(self.env, user, state)
+            return Response.json({"ok": True, "notif": notif})
 
         # run_worker_first 打开后，所有请求都先过 Python：
         # 静态文件（/、css、fires 等）必须在这里代发，否则前端会 404。
@@ -470,7 +487,45 @@ class Default(WorkerEntrypoint):
         if not text.strip():
             return
         # 落库保全量（t 是云端合流的排序键，prompt 才用清洗版）
-        hist.append({"who": "ai", "text": text.strip(), "t": cloud_npc.now_ms()})
+        text = text.strip()
+        hist.append({"who": "ai", "text": text, "t": cloud_npc.now_ms()})
         await env.DATA.put(
             f"{user}/hist/{unit}.json",
             json.dumps(hist[-HIST_MAX_ITEMS:], ensure_ascii=False))
+        # 镜像落库后接横幅（片 3c）：正文照样在，横幅按本机 notif 偏好发送
+        await self._push(env, user, unit, contact, text)
+
+    # 把一条离线消息从系统横幅送出去（iOS 桌面 web app = 横幅，无图标角标）。
+    # notif 三档：off 不发；ticker 只提示有消息；preview 带正文。失效订阅
+    # （Apple/浏览器 404/410）顺手清出名单，横幅链路断了不影响消息本体。
+    async def _push(self, env, user: str, unit: str, contact: dict, text: str) -> None:
+        try:
+            state = await cloud_npc.load_state(env, user)
+        except Exception:
+            state = {}
+        notif = state.get("notif", "preview")
+        if notif not in ("ticker", "preview"):
+            return
+        subs = await _load_subs(env, user)
+        if not subs:
+            return
+        payload = {"title": str(contact.get("name") or unit),
+                   "body": text if notif == "preview" else "给你发来一条新消息",
+                   "unit": unit}
+        keep, gone = [], []
+        for sub in subs:
+            try:
+                res = await env.PUSHER.fetch(
+                    "https://pusher.local/send", method="POST",
+                    headers={"Content-Type": "application/json"},
+                    body=json.dumps({"subscription": sub, "payload": payload}, ensure_ascii=False))
+                res = await res.json()
+                code = int(res.get("statusCode") or 0)
+                if code in (404, 410):
+                    gone.append(sub.get("endpoint"))
+                    continue
+            except Exception as e:
+                print(f"[push] banner send failed: {type(e).__name__} {str(e)[:120]}")
+            keep.append(sub)
+        if gone:
+            await _save_subs(env, user, [s for s in keep if s.get("endpoint") not in set(gone)])

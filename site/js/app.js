@@ -260,19 +260,18 @@ function initPushUI() {
   }).catch(() => setNote("Push not supported here"));
 }
 
-async function enablePush() {
-  pushBtn.disabled = true;
+// 横幅开不开、开什么样式，和 iOS 消息通知一样三档。行点击先出选择层，
+// 真正的权限请求推迟到用户选定非 Off 档的那刻（iOS 主屏 web app 的规矩）。
+async function ensurePush() {
   setErr("");
   try {
-    setNote("Checking permission…");
+    setNote("Subscribing…");
     const reg = await navigator.serviceWorker.register("sw.js");
     const perm = await Notification.requestPermission();
-    if (perm !== "granted") { setNote(perm === "denied" ? "Blocked — enable in Settings" : "Not yet — tap again"); return; }
-    setNote("Getting server key…");
+    if (perm !== "granted") { setNote(perm === "denied" ? "Blocked — enable in Settings" : "Not yet — try again"); return false; }
     let res = await fetch("/push/pubkey");
     if (!res.ok) throw new Error(`pubkey ${res.status} ${(await res.text()).slice(0, 120)}`);
     const key = await res.text();
-    setNote("Subscribing…");
     const applicationServerKey = Uint8Array.from(
       atob((key + "=".repeat(4 - (key.length % 4) % 4)).replace(/-/g, "+").replace(/_/g, "/")),
       (c) => c.charCodeAt(0),
@@ -295,7 +294,6 @@ async function enablePush() {
     const subJson = (json && Object.keys(json).length)
       ? json
       : { endpoint: sub.endpoint, keys: { p256dh: b64u(sub.getKey("p256dh")), auth: b64u(sub.getKey("auth")) } };
-    setNote("Registering with server…");
     res = await fetch("/push/subscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(subJson) });
     // 先试 JSON（后端错误是 {"error": "..."}），解不出再回退 raw 文本
     if (!res.ok) {
@@ -303,16 +301,45 @@ async function enablePush() {
       try { detail = (await res.json()).error; } catch { detail = (await res.text()).slice(0, 200); }
       throw new Error(`subscribe ${res.status} ${detail}`);
     }
-    setNote("On — synced with server");
+    return true;
   } catch (e) {
-    setNote("Something failed — see details below");
     setErr(`[${new Date().toLocaleTimeString()}] ${e.message}`);
-  } finally {
-    pushBtn.disabled = false;
+    return false;
   }
 }
 
-pushBtn.addEventListener("click", enablePush);
+const notifSheet = document.getElementById("notif-sheet");
+pushBtn.addEventListener("click", () => { notifSheet.hidden = false; });
+notifSheet.addEventListener("click", async (e) => {
+  const opt = e.target.closest("[data-notif]");
+  if (!opt) { // 点空白或 Cancel 收层
+    if (e.target === notifSheet || e.target.id === "notif-sheet-close") notifSheet.hidden = true;
+    return;
+  }
+  const notif = opt.dataset.notif;
+  opt.disabled = true;
+  try {
+    // 非 Off 档先确保订阅登记了（已在过早就没副作用）；Off 只要服务端记住选择
+    if (notif !== "off" && !(await ensurePush())) return;
+    const res = await fetch("/prefs", {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ notif }),
+    });
+    if (!res.ok) {
+      let detail;
+      try { detail = (await res.json()).error; } catch { detail = `prefs ${res.status}`; }
+      throw new Error(detail);
+    }
+    setNote(notif === "off" ? "Off"
+      : notif === "ticker" ? "On — banners without message preview"
+      : "On — banners include the message");
+    notifSheet.hidden = true;
+  } catch (err) {
+    setErr(`[${new Date().toLocaleTimeString()}] ${err.message}`);
+  } finally {
+    opt.disabled = false;
+  }
+});
 // 点击通知后把对应聊天顶上来（sw.js 的 notificationclick postMessage）
 navigator.serviceWorker?.addEventListener("message", (e) => {
   if (e.data?.kind === "open-chat" && e.data.unit) {

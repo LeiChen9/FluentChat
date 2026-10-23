@@ -129,22 +129,21 @@ async def run_chain(messages: list[dict]) -> dict:
 
 # ── Web Push 订阅存取 ──────────────────────────────────────────────────────
 # The Python Worker stores subscriptions; the bound JS Worker owns VAPID and encryption.
+# 订阅登记在各人名下（{user}/subs.json），横幅发给谁、谁的失效该清谁才对得上号。
 
-SUBS_KEY = "subs"
 
-
-async def _load_subs(env) -> list:
-    """读订阅列表；KV 坏数据当空表（宁可少推也不崩）。"""
+async def _load_subs(env, user: str) -> list:
+    """读该用户的订阅列表；文件在 {user}/subs.json，坏数据当空表（宁可少推也不崩）。"""
     try:
-        raw = await env.SUBS.get(SUBS_KEY)
-        subs = json.loads(raw or "[]")
+        obj = await env.DATA.get(f"{user}/subs.json")
+        subs = json.loads(await obj.text()) if obj is not None else []
         return subs if isinstance(subs, list) else []
     except Exception:
         return []
 
 
-async def _save_subs(env, subs: list) -> None:
-    await env.SUBS.put(SUBS_KEY, json.dumps(subs))
+async def _save_subs(env, user: str, subs: list) -> None:
+    await env.DATA.put(f"{user}/subs.json", json.dumps(subs))
 
 
 def vapid_pubkey(env) -> str:
