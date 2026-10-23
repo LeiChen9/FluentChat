@@ -582,6 +582,17 @@ button { font: inherit; color: inherit; }
   color: var(--ink);
 }
 
+/* 时间分割线（微信式）：两条消息间隔 ≥5 分钟才插，居中灰字 */
+.msg--time {
+  align-self: center;
+  background: none;
+  border: none;
+  padding: 2px 0;
+  font-size: 11.5px;
+  color: var(--ink-3);
+  animation: none;
+}
+
 /* 「正在输入…」气泡：三个点轮流跳，等整轮算完才落真正的消息（不流式） */
 .msg--typing {
   display: inline-flex;

@@ -214,7 +214,29 @@ export function initChat({ show, back }) {
     callBtn.disabled = on; // 通话里别再拨
   }
 
-  function addBubble(who, text) {
+  // ── 时间分割线（微信式）── 上一条带 t 的消息距今 ≥5 分钟或换了天，
+  // 就在气泡前插一条居中时间戳。t 缺省按发送时刻；旧历史没 t 就不插线。
+  let lastStamp = null;
+  const TIME_GAP = 5 * 60_000;
+
+  function addBubble(who, text, t) {
+    // 语义区分：不传 t = 此刻发出；显式 null = 历史里的旧条目（无 t 可依，
+    // 沿用上一条的时间基线，不插线）。
+    if (t === undefined) t = Date.now();
+    if (t != null) {
+      if (lastStamp == null || t - lastStamp >= TIME_GAP
+          || new Date(t).toDateString() !== new Date(lastStamp).toDateString()) {
+        const cur = new Date(t), prev = new Date(lastStamp ?? t);
+        const stamp = document.createElement("p");
+        stamp.className = "msg msg--time";
+        const fmt = lastStamp != null && cur.toDateString() === prev.toDateString()
+          ? { hour: "2-digit", minute: "2-digit", hour12: false }
+          : { month: "long", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false };
+        stamp.textContent = cur.toLocaleString("zh-CN", fmt);
+        body.append(stamp);
+      }
+      lastStamp = t;
+    }
     const node = document.createElement("p");
     node.className = `msg msg--${who}`;
     node.textContent = text;
@@ -274,14 +296,14 @@ export function initChat({ show, back }) {
     if (pendingMe) {
       const text = clean(pendingMe);
       pendingMe = "";
-      if (text) { addBubble("me", text); pushHist({ who: "me", text }); }
+      if (text) { addBubble("me", text); pushHist({ who: "me", text, t: Date.now() }); }
     }
     if (pendingAi) {
       const parts = sliceReply(pendingAi).map((t) => clean(t)).filter((t) => t);
       pendingAi = "";
       if (!parts.length) return;
       lastAiAt = Date.now(); // 回话落地 = 参照点：紧随的追问按「话题正热」处理
-      if (parts.length === 1) { addBubble("ai", parts[0]); pushHist({ who: "ai", text: parts[0] }); return; }
+      if (parts.length === 1) { addBubble("ai", parts[0]); pushHist({ who: "ai", text: parts[0], t: Date.now() }); return; }
       let i = 0;
       const drip = () => {
         if (i >= parts.length) { hideTyping(); showStatus(); return; }
@@ -289,7 +311,7 @@ export function initChat({ show, back }) {
         setTimeout(() => {
           hideTyping();
           addBubble("ai", parts[i]);
-          pushHist({ who: "ai", text: parts[i] });
+          pushHist({ who: "ai", text: parts[i], t: Date.now() });
           i++;
           drip();
         }, i === 0 ? 0 : 1200 + Math.random() * 1800);
@@ -400,7 +422,7 @@ export function initChat({ show, back }) {
         }
         hideTyping();
         addBubble("ai", parts[i]);
-        pushHist({ who: "ai", text: parts[i] });
+        pushHist({ who: "ai", text: parts[i], t: Date.now() });
         i++;
         drip();
       }, i === 0 ? 0 : 1200 + Math.random() * 1800);
@@ -513,7 +535,7 @@ export function initChat({ show, back }) {
     if (unit === p && mode === "text" && !reviewCard) {
       noteReply(p, new Date()); // 正式开口，再锁一次 glow
       const parts = sliceReply(text);
-      for (const t of parts) { addBubble("ai", t); pushHist({ who: "ai", text: t }); }
+      for (const t of parts) { addBubble("ai", t); pushHist({ who: "ai", text: t, t: Date.now() }); }
       lastAiAt = Date.now(); // 用户马上接话 = 话题正热的参照点
       return;
     }
@@ -821,7 +843,7 @@ export function initChat({ show, back }) {
     }
     for (const item of hist) {
       if (item.kind === "review") addReviewCard(item.text, false);
-      else addBubble(item.who === "me" ? "me" : "ai", item.text);
+      else addBubble(item.who === "me" ? "me" : "ai", item.text, item.t ?? null);
     }
 
     show?.();
@@ -856,6 +878,7 @@ export function initChat({ show, back }) {
     reviewCard = null;
     reviewText = null;
     reviewBuf = "";
+    lastStamp = null; // 新会话的时间线重新起算
 
     callBox.hidden = true;
     callSaid.textContent = "";
@@ -1135,7 +1158,7 @@ export function initChat({ show, back }) {
     input.value = "";
     sendBtn.disabled = true;
     addBubble("me", text);
-    pushHist({ who: "me", text });
+    pushHist({ who: "me", text, t: Date.now() });
     // 交互反馈进调度：用户开口 = 有人理，engagement 回弹；晾着的那次结清
     engageBump(unit.id, Date.now() - lastAiAt < WARM_WINDOW ? 0.3 : 0.2);
     noteUserTalk(unit.id);
