@@ -17,10 +17,14 @@ BEGIN = "# ---- BEGIN 内联 prompt（tools/gen_prompts.py 生成，勿手改）
 END = "# ---- END 内联 prompt ----"
 
 lines = ['# ---- BEGIN 内联 prompt（tools/gen_prompts.py 生成，勿手改）----\n',
-         "# 来源：prompts/*.md。改 prompt 请改那边的 .md，再重跑本脚本。\n",
+         "# 来源：prompts/*.md + site/assets/contacts/*/persona.md。\n"
+         "# 改 prompt 请改那边的 .md，再重跑本脚本。\n",
          "PROMPTS = {\n"]
-for f in sorted((ROOT / "prompts").rglob("*.md")):
-    lines.append(f'    "{f.stem}": {f.read_text(encoding="utf-8").strip()!r},\n')
+sources = sorted((ROOT / "prompts").rglob("*.md")) + \
+    sorted((ROOT / "site/assets/contacts").glob("*/persona.md"))
+for f in sources:
+    key = f.stem if "contacts" not in f.parts else f"persona-{f.parts[-2]}"
+    lines.append(f'    "{key}": {f.read_text(encoding="utf-8").strip()!r},\n')
 lines.append("}\n")
 lines.append(END + "\n")
 
@@ -34,4 +38,4 @@ if BEGIN in src:
 else:
     WORKER.write_text(src + "\n\n" + block, encoding="utf-8")
 
-print(f"已注入 {len(list((ROOT / 'prompts').rglob('*.md')))} 个 prompt 到 worker.py")
+print(f"已注入 {len(sources)} 个 prompt 到 worker.py")

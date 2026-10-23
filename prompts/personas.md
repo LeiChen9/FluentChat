@@ -7,7 +7,7 @@ Design constraints:
 - Each has a fixed "message rhythm"; the future background push scheduler generates messages following it.
 - Voices use Gemini Live `prebuiltVoiceConfig.voiceName` (official 30-voice list, shared with TTS); the worker maps per persona.
 
-Per-persona content (status line, chat preview, moments) lives in `site/assets/contacts/<id>/contact.json` + `moments.md` — the code only reads and renders it. Add a new person = a new folder there + `prompts/personas/persona-<id>.md` + one whitelist line in `worker.py`.
+Per-persona content (status line, chat preview, moments) lives in `site/assets/contacts/<id>/contact.json` + `moments.md` — the code only reads and renders it. Add a new person = a new folder there + `persona.md` in it + one whitelist line in `worker.py` (its prompt gets inlined from `site/assets/contacts/<id>/persona.md`).
 
 ## Voice cheat sheet
 
