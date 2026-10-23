@@ -640,6 +640,7 @@ export function initChat({ show, back }) {
   // 塞进 AudioBuffer，再按 playHead 排队 start(at)，分片才不会重叠/断音。
   function playAudioBase64(b64) {
     if (!b64) return;
+    stopRingback(); // AI 的第一声进来，彩铃到此为止（对方「接了」）
     try {
       const ctx = ensureAudio();
       const bin = atob(b64);
@@ -865,6 +866,7 @@ export function initChat({ show, back }) {
     burstArmed = 0;
     stopMic();
     stopPlayback();
+    stopRingback(); // 退出页面/换人时彩铃必须一起收
     if (ws) { try { ws.close(); } catch {} }
     ws = null;
     playHead = 0;
@@ -896,6 +898,7 @@ export function initChat({ show, back }) {
     if (u !== unit) return;
     stopMic();
     stopPlayback();
+    stopRingback();
     mode = "text";
     callBox.hidden = true;
     callSaid.textContent = "";
@@ -953,6 +956,7 @@ export function initChat({ show, back }) {
     if (unit !== u) return;
     stopMic();
     stopPlayback();
+    stopRingback();
     flushPending(); // 断线时攒着的话先落下来，别丢
     ws = null;
     const wasCall = mode === "call";
@@ -1043,9 +1047,30 @@ export function initChat({ show, back }) {
   }
 
   // ── 通话 ──
+  // ── 彩铃：拨下就响，AI 第一声（或挂断/断线/退出）即停 ──
+  // loop 循环拨号音；volume 低一点别盖过人声。播放失败静默（旧设备 iOS
+  // 手势时机不对时宁可无声也不把通话卡死）。
+  let ringback = null;
+
+  function startRingback() {
+    stopRingback(); // 连拨以防上一次的尾巴还在
+    ringback = new Audio("assets/DialMusic.mp3");
+    ringback.loop = true;
+    ringback.volume = 0.55;
+    ringback.play().catch(() => {});
+  }
+
+  function stopRingback() {
+    if (!ringback) return;
+    ringback.pause();
+    ringback.currentTime = 0;
+    ringback = null;
+  }
+
   function startCall() {
     if (!unit || mode !== "text" || ws) return;
     ensureAudio(); // 必须在用户手势里同步调，手机才肯出声、才肯开麦克风
+    startRingback(); // 彩铃跟着手势走：不等握手、AI 开口前一直响
     mode = "call";
     callBox.hidden = false;
     callSaid.textContent = "";
@@ -1058,6 +1083,7 @@ export function initChat({ show, back }) {
   function hangUp() {
     stopMic();
     stopPlayback();
+    stopRingback();
     callBox.hidden = true;
     callSaid.textContent = "";
     mode = "text";
