@@ -51,13 +51,15 @@ def minutes_left_cst(windows, now: float) -> int:
     return total
 
 
-def pick_proactive(contact: dict, led: dict, eng: float, now: float) -> bool:
+def pick_proactive(contact: dict, led: dict, eng: float, now: float, force: bool = False) -> bool:
     """这一 tick 该不该开口。led 为该 persona 云册账本（缺= {"date", "sent"}），
     命中与否由调用方记账 —— 账本读写留编排层，这里纯判定。
 
     与浏览器差一档：浏览器分钟粒度，剩余「可抽分钟数」≈ 剩余格数；cron
     5 分钟一格，把剩余分钟折成 5 分钟格再抽，撞中率才与撒匀语义对得上。
-    """
+
+    force=True 跳过随机格抽（要求仍在窗内、仍有名额才 True），给自检
+    路由用；定时调度永远 False。"""
     s = contact.get("proactive")
     if not isinstance(s, dict) or not isinstance(led, dict):
         return False
@@ -77,6 +79,8 @@ def pick_proactive(contact: dict, led: dict, eng: float, now: float) -> bool:
     rem = round(lo + max(0.0, min(1.0, eng)) * max(0.0, hi - lo)) - int(led.get("sent") or 0)
     if rem <= 0:
         return False
+    if force:
+        return True
     slots = max(1, left // 5)
     return random.random() < min(1.0, rem / slots)
 

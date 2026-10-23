@@ -245,7 +245,9 @@ class Default(WorkerEntrypoint):
         if request.method == "POST" and path.endswith("/cron/kick"):
             if not user:
                 return Response.json({"error": "请先登录"}, status=401)
-            wrote = await self._cron_sweep(self.env, now=cloud_npc.now_ms() / 1000.0, one_user=user)
+            force = (str(request.url).split("?", 1)[-1].find("force=1") >= 0) or str(request.url).split("?")[-1] == "force=1"
+            wrote = await self._cron_sweep(self.env, now=cloud_npc.now_ms() / 1000.0,
+                                           one_user=user, force=force)
             return Response.json({"ok": True, "wrote": wrote})
 
         # 个人资料：用户名 + 头像（dataURL 存 {user}/avatar.txt，前端直接贴 img.src）
@@ -384,9 +386,9 @@ class Default(WorkerEntrypoint):
         await self._cron_sweep(env, now=cloud_npc.now_ms() / 1000.0)
 
     # 一轮 cron 的主体（scheduled 与自检路由共用）。逐离线用户抽签代打。
-    async def _cron_sweep(self, env, now: float, one_user: str | None = None) -> list[str]:
+    async def _cron_sweep(self, env, now: float, one_user: str | None = None, force: bool = False) -> list[str]:
         """one_user 传值 = 自检模式：只跑该用户、绕过心跳判定；正常轮跑全部离线用户。
-        返回本轮真正中签并写库了的 (user, unit) 清单。"""
+        force 穿透到底层抽签（仍守窗口与名额）。返回本轮真中签并写库的 user/unit。"""
         bind_worker_env(env)
         auth.bind_r2(env)
         try:
@@ -436,7 +438,7 @@ class Default(WorkerEntrypoint):
                 e = eng.get(unit)
                 e = (e if isinstance(e, (int, float)) else cloud_npc.ENG_DEFAULT) * cloud_npc.ENG_DECAY
                 # 命中先记账：生成失败也不重抽（不浪费名额，同浏览器的重试语义）
-                if not cloud_npc.pick_proactive(contact, led, e, now):
+                if not cloud_npc.pick_proactive(contact, led, e, now, force=force):
                     eng[unit] = e
                     continue
                 ledgers[unit] = {"date": today, "sent": int(led.get("sent") or 0) + 1,
