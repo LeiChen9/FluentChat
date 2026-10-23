@@ -240,6 +240,14 @@ class Default(WorkerEntrypoint):
             await cloud_npc.save_state(self.env, user, state)
             return Response.json({"ok": True})
 
+        # 自检：对本账号立即跑一轮离线代打流程（绕心跳判定，配额窗口照常）。
+        # 排查 cron 火总不看走没走、账号画像抽没抽中都用得上；只有本人能动自己。
+        if request.method == "POST" and path.endswith("/cron/kick"):
+            if not user:
+                return Response.json({"error": "请先登录"}, status=401)
+            wrote = await self._cron_sweep(self.env, now=cloud_npc.now_ms() / 1000.0, one_user=user)
+            return Response.json({"ok": True, "wrote": wrote})
+
         # 个人资料：用户名 + 头像（dataURL 存 {user}/avatar.txt，前端直接贴 img.src）
         if request.method == "GET" and path.endswith("/profile"):
             if not user:
@@ -371,13 +379,16 @@ class Default(WorkerEntrypoint):
     #   调链生成 → 写 {user}/hist/{unit}.json 镜像。推送通知是片 3c：
     #   pusher 解锁后接进来。浏览器上线时 openChat 的云端合流会把
     #   消息摆回本地一册。
-    # workerd 的 scheduled 只传 controller 一个位置参数；rest 承接 (env, ctx)；env 与 fetch 同走 self.env
     async def scheduled(self, controller, *rest):
         env = self.env
+        await self._cron_sweep(env, now=cloud_npc.now_ms() / 1000.0)
+
+    # 一轮 cron 的主体（scheduled 与自检路由共用）。逐离线用户抽签代打。
+    async def _cron_sweep(self, env, now: float, one_user: str | None = None) -> list[str]:
+        """one_user 传值 = 自检模式：只跑该用户、绕过心跳判定；正常轮跑全部离线用户。
+        返回本轮真正中签并写库了的 (user, unit) 清单。"""
         bind_worker_env(env)
         auth.bind_r2(env)
-        print("[cron] scheduled tick begins")
-        now = cloud_npc.now_ms() / 1000.0
         try:
             obj = await env.DATA.get("users.json")
             raw = await obj.text() if obj is not None else "{}"
@@ -388,11 +399,15 @@ class Default(WorkerEntrypoint):
         if not isinstance(users, dict):
             users = {}
 
-        offline = []
+        offline, wrote = [], []
         for user in users:
             state = await cloud_npc.load_state(env, user)
             seen = state.get("lastSeen")
-            if not (isinstance(seen, (int, float)) and 0 < seen < now * 1000 - cloud_npc.OFFLINE_MS):
+            # 自检模式：指定用户强制进流程；正常模式下按心跳判定
+            if one_user is not None:
+                if user != one_user:
+                    continue
+            elif not (isinstance(seen, (int, float)) and 0 < seen < now * 1000 - cloud_npc.OFFLINE_MS):
                 continue  # 心跳活着（在线）或从未登录 → 浏览器自己管
             offline.append(user)
             ledgers = state.get("ledger") if isinstance(state.get("ledger"), dict) else {}
@@ -429,10 +444,12 @@ class Default(WorkerEntrypoint):
                 eng[unit] = e
                 hits += 1
                 await self._proactive(env, user, unit, contact)
+                wrote.append(f"{user}/{unit}")
 
             await cloud_npc.save_state(env, user, {**state, "ledger": ledgers, "eng": eng})
         if offline:
-            print(f"[cron] offline={offline}")
+            print(f"[cron] offline passed={'watch' if one_user is None else 'kick'}={offline} wrote={wrote}")
+        return wrote
 
     # 离线代打的生成与落库。链上任何一层失败就整个放弃本条：名额已扣，
     # 别让半成品消息写进镜像。
