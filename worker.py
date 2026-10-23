@@ -197,13 +197,9 @@ class Default(WorkerEntrypoint):
         if request.method == "GET" and path.endswith("/me"):
             return auth.me(await auth.resolve_user(request))
 
-        # ── 以下业务所需登录：cookie 里要有注册过的用户名 ──
+        # ── 以下业务所需登录：cookie 里要有注册过的用户名。
+        # 注意别把静态资产挡住：GET/HEAD 的页面/JS/CSS 走 ASSETS 代发（在下面），公开。
         user = await auth.resolve_user(request)
-        gated = not user and not (
-            path.endswith("/health") or path.endswith("/push/pubkey")
-        )
-        if gated:
-            return Response.json({"error": "请先登录"}, status=401)
 
         # 健康检查：顺便确认部署成功、secret 已设
         if request.method == "GET" and path.endswith("/health"):
@@ -219,10 +215,14 @@ class Default(WorkerEntrypoint):
 
         # ── 登录后的业务；历史镜像挂在门禁之后 ──
         if request.method in ("GET", "PUT") and "/hist/" in path:
+            if not user:
+                return Response.json({"error": "请先登录"}, status=401)
             return await _hist_route(self.env, user, request)
 
         # 文字对话：persona 聊天走模型容灾链（非流式）。/history 语义同 /token。
         if request.method == "POST" and path.endswith("/chat"):
+            if not user:
+                return Response.json({"error": "请先登录"}, status=401)
             try:
                 body = await request.json()
             except Exception:
@@ -250,6 +250,8 @@ class Default(WorkerEntrypoint):
                             headers={"Content-Type": "text/plain"})
 
         if request.method == "POST" and path.endswith("/push/subscribe"):
+            if not user:
+                return Response.json({"error": "请先登录"}, status=401)
             try:
                 body = await request.json()
             except Exception:
@@ -272,6 +274,10 @@ class Default(WorkerEntrypoint):
 
         if request.method != "POST":
             return Response.json({"error": "用 POST"}, status=405)
+
+        # 签发 token 是最后兜底的 POST 落点，门禁搁在这儿
+        if not user:
+            return Response.json({"error": "请先登录"}, status=401)
 
         try:
             body = await request.json()
