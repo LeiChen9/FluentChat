@@ -187,7 +187,7 @@ export function initChat({ show, back }) {
       });
       rowOf.get(p.id).preview.textContent = lastLine(p.id) || "";
       const lastTalk = loadHist(p.id).filter((h) => h.who === "me" || h.who === "ai").at(-1);
-      rowOf.get(p.id).time.textContent = lastTalk && lastTalk.t ? fmtRowTime(lastTalk.t) : p.time;
+      rowOf.get(p.id).time.textContent = lastTalk && lastTalk.t ? fmtRowTime(lastTalk.t) : "";
     }
     paintDots();
     startProactive(); // 名单到齐才开始调度
@@ -841,11 +841,13 @@ export function initChat({ show, back }) {
           return Array.isArray(data) ? data : null;
         } catch { return null; }
       };
-      arr = await pullMirror();
-      if (!arr && !hist.length) { // 本地也空 = 冷启动首猜失败的高发场景，等半秒再拉
-        await new Promise((r) => setTimeout(r, 400));
-        if (u === unit) arr = await pullMirror();
+      for (const delay of [0, 400, 1000, 2000]) {
+        if (delay) await new Promise((r) => setTimeout(r, delay));
+        if (u !== unit) return;
+        arr = await pullMirror();
+        if (arr !== null || hist.length) break;
       }
+      if (!arr && !hist.length) setChatState("History is reconnecting…");
       if (arr && arr.length) {
         const seen = new Set(hist.map(key));
         const extra = arr.filter((c) => c && c.who && !seen.has(key(c)));
@@ -1016,7 +1018,13 @@ export function initChat({ show, back }) {
     // 时显示通道级文案，别顶成 On call 让人以为已在通话
     if (d.setupComplete) {
       setReady(true);
-      if (mode === "call") setCallState("Connected — waiting…");
+      if (mode === "call") {
+        setCallState("Connected — waiting…");
+        // 接通了先「喂」一声：模型等人开口才说话，没有这条唤醒输入
+        // 通话永远停在 waiting。文本发完要显式收尾，不然 VAD 悬着不回应。
+        send({ realtimeInput: { text: "Hello?" } });
+        send({ realtimeInput: { activityEnd: {} } });
+      }
       return;
     }
 
