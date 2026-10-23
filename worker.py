@@ -248,7 +248,7 @@ class Default(WorkerEntrypoint):
             force = (str(request.url).split("?", 1)[-1].find("force=1") >= 0) or str(request.url).split("?")[-1] == "force=1"
             wrote = await self._cron_sweep(self.env, now=cloud_npc.now_ms() / 1000.0,
                                            one_user=user, force=force)
-            return Response.json({"ok": True, "wrote": wrote})
+            return Response.json({"ok": True, "wrote": wrote, "diag": diag})
 
         # 个人资料：用户名 + 头像（dataURL 存 {user}/avatar.txt，前端直接贴 img.src）
         if request.method == "GET" and path.endswith("/profile"):
@@ -418,7 +418,7 @@ class Default(WorkerEntrypoint):
         if not isinstance(users, dict):
             users = {}
 
-        offline, wrote = [], []
+        offline, wrote, diag = [], [], []
         for user in users:
             state = await cloud_npc.load_state(env, user)
             seen = state.get("lastSeen")
@@ -444,6 +444,7 @@ class Default(WorkerEntrypoint):
                 except Exception:
                     pass
                 if not isinstance(contact, dict):
+                    diag.append({"unit": unit, "err": "contact load failed"})
                     continue
                 led = ledgers.get(unit)
                 led = led if isinstance(led, dict) else {}
@@ -455,7 +456,12 @@ class Default(WorkerEntrypoint):
                 e = eng.get(unit)
                 e = (e if isinstance(e, (int, float)) else cloud_npc.ENG_DEFAULT) * cloud_npc.ENG_DECAY
                 # 命中先记账：生成失败也不重抽（不浪费名额，同浏览器的重试语义）
-                if not cloud_npc.pick_proactive(contact, led, e, now, force=force):
+                hit = cloud_npc.pick_proactive(contact, led, e, now, force=force)
+                s = contact.get("proactive") or {}
+                left = cloud_npc.minutes_left_cst(s.get("windows"), now)
+                diag.append({"unit": unit, "left": left, "sent": int(led.get("sent") or 0),
+                             "eng": round(e, 4), "hit": hit})
+                if not hit:
                     eng[unit] = e
                     continue
                 ledgers[unit] = {"date": today, "sent": int(led.get("sent") or 0) + 1,
