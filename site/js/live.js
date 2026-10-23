@@ -641,6 +641,8 @@ export function initChat({ show, back }) {
   function playAudioBase64(b64) {
     if (!b64) return;
     stopRingback(); // AI 的第一声进来，彩铃到此为止（对方「接了」）
+    // 「On call」跟随人声时刻：彩铃在响、说话未到就不顶接通态
+    if (mode === "call") setCallState("On call");
     try {
       const ctx = ensureAudio();
       const bin = atob(b64);
@@ -999,10 +1001,11 @@ export function initChat({ show, back }) {
       return;
     }
 
-    // 通话线就绪：拨号盘上的 Connecting… 刷成 On call
+    // 通话线就绪：响铃继续，「接通」等 AI 出声才升——通道成了但人还没说话
+    // 时显示通道级文案，别顶成 On call 让人以为已在通话
     if (d.setupComplete) {
       setReady(true);
-      if (mode === "call") setCallState("On call");
+      if (mode === "call") setCallState("Connected — waiting…");
       return;
     }
 
@@ -1055,7 +1058,7 @@ export function initChat({ show, back }) {
       }
       showStatus();
       examBurst();
-      if (mode === "call") setCallState("On call");
+      // turn 收尾不冒充接通：On call 由 AI 真出声那一刻 top 带上
     }
   }
 
