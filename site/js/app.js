@@ -1,4 +1,4 @@
-import { initChat } from "./live.js";
+import { initChat } from "./live.js?v=20261023-4";
 import { loadContacts } from "./personas.js";
 import { statusOf } from "./rhythm.js";
 // 四个主 tab + 一个对话子页（对应 line/whatsapp 首层导航）。
@@ -101,6 +101,7 @@ async function boot() {
   if (!status.user) await showAuth(); // 登录/注册成了才会接资料和云镜
   paintProfile(status.user);
   startHeartbeat();
+  chat.prewarmHist();
 }
 
 // ── 心跳：页面开着每 3 分钟 /ping 一次报活 ──

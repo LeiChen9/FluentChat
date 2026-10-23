@@ -90,6 +90,7 @@ export function initChat({ show, back }) {
   let pendingMe = "";
   let typingEl = null;   // 「正在输入…」气泡
   let hist = [];         // 当前 Unit 的历史（内存 + localStorage 双写）
+  let openSeq = 0;       // 切走后，旧 R2 请求不能再写进新会话
 
   // 回复节奏：状态挂在 persona 上（replies），切走聊天页也不打断。
   const replies = new Map(); // persona.id -> { texts, delay, gen, retry, ready, text, wait, used, req }
@@ -581,6 +582,17 @@ export function initChat({ show, back }) {
     }).catch(() => {});
   }
 
+  function prewarmHist() {
+    loadContacts().then((list) => list.forEach((p) => {
+      if (loadHist(p.id).length) return;
+      fetch(`/hist/${p.id}`).then((r) => r.ok ? r.json() : null).then((arr) => {
+        if (!loadHist(p.id).length && Array.isArray(arr) && arr.length) {
+          try { localStorage.setItem(HIST_KEY + p.id, JSON.stringify(arr.slice(-HIST_MAX))); } catch {}
+        }
+      }).catch(() => {});
+    }));
+  }
+
   function pushHist(item) {
     if (!unit) return;
     item.t = Date.now();
@@ -802,6 +814,7 @@ export function initChat({ show, back }) {
   async function openChat(u) {
     if (unit === u) { show?.(); return; } // 同一个人：页面/连接/复盘都还热着，直接回去
     teardown();
+    const seq = ++openSeq;
     unit = u;
     unread.delete(u.id); // 进对话 = 看过了
     setBadge(u.id);
@@ -827,6 +840,12 @@ export function initChat({ show, back }) {
     // 「本地空才补位」。按 who|text|t 去重，t 升序滑入本地（浏览器
     // sort 稳定，旧数据没 t 的按原位排在最前）。
     hist = loadHist(u.id);
+    for (const item of hist) {
+      if (item.kind === "review") addReviewCard(item.text, false);
+      else addBubble(item.who === "me" ? "me" : "ai", item.text, item.t ?? null);
+    }
+    show?.();
+    scrollDown(true);
     {
       // 云端镜像拉取：本地历史干净ピ仕事 devs 正常，但 iOS 主屏 app 冷启动
       // 首猜偶发挂（登录都成功了家的 fetch 也会 Load failed）——空档时再补
@@ -843,8 +862,9 @@ export function initChat({ show, back }) {
       };
       for (const delay of [0, 400, 1000, 2000]) {
         if (delay) await new Promise((r) => setTimeout(r, delay));
-        if (u !== unit) return;
+        if (seq !== openSeq) return;
         arr = await pullMirror();
+        if (seq !== openSeq) return;
         if (arr !== null || hist.length) break;
       }
       if (!arr && !hist.length) setChatState("History is reconnecting…");
@@ -854,17 +874,14 @@ export function initChat({ show, back }) {
         if (extra.length) {
           hist = [...hist, ...extra].sort((a, b) => (a.t ?? 0) - (b.t ?? 0)).slice(-HIST_MAX);
           try { localStorage.setItem(HIST_KEY + u.id, JSON.stringify(hist)); } catch {}
+          for (const item of extra) {
+            if (item.kind === "review") addReviewCard(item.text, false);
+            else addBubble(item.who === "me" ? "me" : "ai", item.text, item.t ?? null);
+          }
+          scrollDown(true);
         }
       }
     }
-    for (const item of hist) {
-      if (item.kind === "review") addReviewCard(item.text, false);
-      else addBubble(item.who === "me" ? "me" : "ai", item.text, item.t ?? null);
-    }
-
-    show?.();
-    scrollDown(true);
-    // 半分钟一轮：顶栏跟着作息变状态。角色不主动开口，首轮回话等用户先说话。
     if (!statusTimer) statusTimer = setInterval(showStatus, 30000);
   }
 
@@ -872,6 +889,7 @@ export function initChat({ show, back }) {
   // 历史另存在 localStorage 里，不跟着这里走 —— 下次打开同一 Unit 会重新渲染，
   // 而且签 token 时会带上，模型那边也有记忆。
   function teardown() {
+    openSeq++;
     connectSeq++; // 让还在等 token 的 connect 作废
     if (reviewIdle) { clearTimeout(reviewIdle); reviewIdle = null; }
     if (reviewCap) { clearTimeout(reviewCap); reviewCap = null; }
@@ -1244,6 +1262,7 @@ export function initChat({ show, back }) {
 
   return {
     close: teardown,
+    prewarmHist,
     // 联系人页也从这里进对话
     open: openChat,
   };
