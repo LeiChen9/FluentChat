@@ -128,6 +128,22 @@
 
   </main>
 
+  <!-- ── 登录/注册覆盖层：未登录时遮住全部视图，成了立刻撤走 ── -->
+  <div class="auth" id="auth" hidden>
+    <form class="auth__card" id="auth-form">
+      <b class="auth__title">FluentChat</b>
+      <input class="auth__input" id="auth-user" maxlength="24" placeholder="Username"
+             autocomplete="username" autocapitalize="none" required>
+      <input class="auth__input" id="auth-pass" type="password" placeholder="Password"
+             autocomplete="current-password" required>
+      <i class="auth__err" id="auth-err"></i>
+      <div class="auth__row">
+        <button class="auth__primary" type="submit">Sign in</button>
+        <button class="auth__ghost" type="button" id="auth-reg">Register</button>
+      </div>
+    </form>
+  </div>
+
   <!-- ── 底部栏：聊天 / 联系人 / 朋友圈 / Me ── -->
   <nav class="tabbar" role="tablist" aria-label="Main tabs">
     <button class="tab" role="tab" data-view="chats" aria-selected="true" aria-controls="view-chats">

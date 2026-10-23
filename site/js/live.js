@@ -520,7 +520,9 @@ export function initChat({ show, back }) {
     // 对话页没开：写进本地历史，回页时自然渲染；列表预览提个醒+置顶
     const arr = loadHist(p.id);
     arr.push({ who: "ai", text, t: Date.now() });
-    try { localStorage.setItem(HIST_KEY + p.id, JSON.stringify(arr.slice(-HIST_MAX))); } catch {}
+    const KEEP = arr.slice(-HIST_MAX);
+    try { localStorage.setItem(HIST_KEY + p.id, JSON.stringify(KEEP)); } catch {}
+    mirrorHist(p.id);
     bumpRow(p.id);
     const row = rowOf.get(p.id);
     if (row) {
@@ -547,13 +549,25 @@ export function initChat({ show, back }) {
     }
   }
 
+  // R2 镜像：本地一落盘就顺手 PUT（fire-and-forget）。云端是耐久备份——
+  // 换设备/清缓存能接回来，后续 cron 云端主动推送也从这儿读
+  function mirrorHist(id) {
+    return fetch(`/hist/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(loadHist(id).slice(-HIST_MAX)),
+    }).catch(() => {});
+  }
+
   function pushHist(item) {
     if (!unit) return;
     item.t = Date.now();
     hist.push(item);
+    const KEEP = hist.slice(-HIST_MAX);
     try {
-      localStorage.setItem(HIST_KEY + unit.id, JSON.stringify(hist.slice(-HIST_MAX)));
+      localStorage.setItem(HIST_KEY + unit.id, JSON.stringify(KEEP));
     } catch {}
+    mirrorHist(unit.id);
     // 落一条预览跟着动，回列表就能看到最新一条（像 WhatsApp/LINE）
     bumpRow(unit.id); // 谁有新消息就置顶（微信式），自己发的也算
     const row = rowOf.get(unit.id);
@@ -760,7 +774,7 @@ export function initChat({ show, back }) {
   }
 
   // ── 打开 / 关掉一个对话 ──
-  function openChat(u) {
+  async function openChat(u) {
     if (unit === u) { show?.(); return; } // 同一个人：页面/连接/复盘都还热着，直接回去
     teardown();
     unit = u;
@@ -782,8 +796,22 @@ export function initChat({ show, back }) {
     setChatState(STATUS_LABEL[statusOf(u, new Date())]);
     setReady(false);
 
-    // 把上次的聊天记录摆回来（含复盘卡片），别每次都是白纸一张
+    // 把上次的聊天记录摆回来（含复盘卡片），别每次都是白纸一张。
+    // 本机没有历史时从云端镜像接：换设备/清缓存后能接上，登录同一账号的人
+    // 拉回自己名下这份（页开着本地为准，云端只在本地空时补位）
     hist = loadHist(u.id);
+    if (!hist.length) {
+      try {
+        const res = await fetch(`/hist/${u.id}`);
+        if (res.ok) {
+          const arr = await res.json();
+          if (Array.isArray(arr) && arr.length) {
+            hist = arr.slice(-HIST_MAX);
+            try { localStorage.setItem(HIST_KEY + u.id, JSON.stringify(hist)); } catch {}
+          }
+        }
+      } catch {}
+    }
     for (const item of hist) {
       if (item.kind === "review") addReviewCard(item.text, false);
       else addBubble(item.who === "me" ? "me" : "ai", item.text);
@@ -1072,13 +1100,14 @@ export function initChat({ show, back }) {
   }
 
   // Reset：清掉这个 Unit 的本地历史并拆线重连 —— 界面和模型一起回到白纸。
-  function resetChat() {
+  async function resetChat() {
     const u = unit;
     if (!u) return;
     if (!confirm("Clear this chat? The history can't be recovered.")) return;
     cancelReply(u); // 在途回复一起退场，别等清空后落进白纸
     teardown();
     try { localStorage.removeItem(HIST_KEY + u.id); } catch {}
+    await mirrorHist(u.id); // 云端一起清成空表，不然重开会从镜像复活
     openChat(u); // unit 已被 teardown 置空，不会命中「同一个还开着」的早退分支
   }
 

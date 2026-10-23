@@ -273,3 +273,17 @@ npx wrangler deploy                  # 改了 site/ 必须部署，workers.dev �
 - CSS：app.css 新增 .row__avwrap/.row__name/.row__name .dot/.row__badge（#fa5151，--bg 描边 1.5px 破卡片感）。
 - 底部 Chats tab 同款角标：unread 汇总即 tab 徽章数，setBadge 顺带刷（增/清都流经它）；CSS .tab 加 position:relative，.tab__badge 用 --bar-bg 描边贴在图标右上。页面加载时由建行后首刷一并归零。
 
+## 用户系统 · 片 1 后端（2026-10-23）
+- 抄 argus api_auth 模式：`backend/auth.py`（cookie 会话 + R2 users.json 单文件用户表，20 人私有服务的取舍——注册/登录/登出/me/resolve_user，Bad 异常统一 400/401/409）。密码 salt+sha256 混存，不存明文。
+- wrangler.jsonc 新增 R2 绑定 `DATA` 指向 `fluentchat-data`（已 bucket create；私有 bucket，读写一律经 Worker）。用户数据位形：`{user}/hist/{persona}.json`（历史镜像）、`{user}/state.json`、`{user}/subs.json`，片 2 起用。
+- worker.py：`/register /login /logout /me` 四条公开认证路由（_auth_route 壳，JSON 出错当空 body 给 Bad 打 400）；`/health`、`/push/pubkey` 豁免门外，其余全部业务路由要求登录（401 提示「请先登录」）。
+- wrangler dev 全口径实测：healthy 公开 200；未登录 /token 401；短密码 400；注册种 cookie（HttpOnly+Secure+SameSite=Lax，一年）；重复注册 409；/me 带 cookie 识别「rice」；登出 Max-Age=0 当场过期；错密码 401 同口径不暴露用户名存在性。
+- localStorage 历史照旧在线上跑（片 2 才接 R2 镜像 + 前端登录 UI）。
+
+## 用户系统 · 片 2 前端（2026-10-23）
+- 新增 `/hist/{unit}` GET/PUT（`_hist_route`）：unit 全白名单化（`[A-Za-z0-9_-]{1,64}`，路径穿越/`users.json` 同名覆盖全部 400），R2 位形 `{user}/hist/{unit}.json`，挂在登录门禁之后。
+- index.html 登录/注册覆盖层 `.auth`（遮满全屏，卡片两个按钮：Sign in 主按钮 / Register 幽灵钮，错误行居中）；app.js boot 重构：先 `/me`，未登录 await showAuth，登录成功才 loadPeople 装联系人+朋友圈；initChat 保持启动即绑 DOM（只等 loadContacts 后才建列表）。
+- live.js 镜像三处：pushHist 与 deliverProactive 后台落盘 均 fire-and-forget PUT 本地切片；openChat 本地 hist 空时 GET 云端补位（换设备/清缓存接续，本地为准原则只在本地空时读云）；resetChat 清本地 → `await mirrorHist` 把云端清成空表再重开，防止 GET 复活死聊天。
+- wrangler dev 实测：登录态 PUT/GET 镜像原样往返；dana 拿不到 rice 的镜像（用户隔离）；怪物 unit 400；未登录 401。
+- 待真机确认：覆盖层输入聚焦、iOS 键盘遮挡（下次真机过）。
+

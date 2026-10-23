@@ -9,6 +9,7 @@
 服务端强制生效，用户改不了。
 
 目录分工：
+- backend/auth.py     注册/登录/登出，用户表落 R2 users.json（cookie 会话）
 - backend/common.py   模型容灾链、环境绑定与 secret 读取、KV 订阅存取（工具层）
 - backend/config.py   全部常量与白名单（配置层）
 - backend/prompt_data.py  自动生成的 prompt 数据，勿手改
@@ -16,7 +17,9 @@
 """
 
 import json
+import re
 from workers import Response, WorkerEntrypoint, fetch as js_fetch
+from backend import auth
 from backend.common import (ENDPOINTS, _load_subs, _save_subs,
                             bind_worker_env, env_key, run_chain, vapid_pubkey)
 from backend.prompt_data import PROMPTS
@@ -41,6 +44,48 @@ def to_messages(unit: str, history: list[dict]) -> list[dict]:
 def read_prompt(name: str) -> str:
     """取 prompt 内容。种类与来源见 backend/prompt_data.py（tools/gen_prompts.py 生成）。"""
     return PROMPTS[name.removesuffix(".md")]
+
+
+async def _auth_route(fn, request) -> Response:
+    """认证路由的壳：取 JSON → 业务（Bad 归 4xx），认证接口不碰链路。"""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    try:
+        return await fn(body)
+    except auth.Bad as e:
+        return Response.json({"error": e.detail}, status=e.status)
+
+
+_SAFE_UNIT = re.compile(r"[A-Za-z0-9_-]{1,64}$")
+
+
+async def _hist_route(env, user: str, request) -> Response:
+    """聊天历史镜像：PUT 存、GET 取，R2 位形 {user}/hist/{unit}.json。
+
+    localStorage 是使用中的活本，R2 是耐久备份（换设备接续、后续 cron 云端
+    主动推都从这儿读）。unit 是 key 的一段路径，只认 persona-xxx/unit-XX。
+    """
+    unit = str(request.url).split("?", 1)[0].split("/hist/", 1)[1]
+    if not _SAFE_UNIT.match(unit):
+        return Response.json({"error": "unit 非法"}, status=400)
+    key = f"{user}/hist/{unit}.json"
+
+    if request.method == "PUT":
+        try:
+            hist = await request.json()
+        except Exception:
+            return Response.json({"error": "请求体不是合法 JSON"}, status=400)
+        if not isinstance(hist, list):
+            return Response.json({"error": "历史必须是数组"}, status=400)
+        await env.DATA.put(key, json.dumps(hist, ensure_ascii=False))
+        return Response.json({"ok": True})
+
+    obj = await env.DATA.get(key)
+    if obj is None:
+        return Response.json({"error": "云端还没有这份对话"}, status=404)
+    return Response(await obj.text(), headers={"Content-Type": "application/json"})
 
 
 def sanitize_history(raw) -> list[dict]:
@@ -137,9 +182,28 @@ def build_token_payload(
 
 class Default(WorkerEntrypoint):
     async def fetch(self, request):
-        # 先绑定 env，链上取 key 全靠它
+        # 先绑定 env，链上取 key、读用户表全靠它
         bind_worker_env(self.env)
+        auth.bind_r2(self.env)
         path = str(request.url).split("?", 1)[0]
+
+        # ── 认证路由：不用先登录 ──
+        if request.method == "POST" and path.endswith("/register"):
+            return await _auth_route(auth.register, request)
+        if request.method == "POST" and path.endswith("/login"):
+            return await _auth_route(auth.login, request)
+        if request.method == "POST" and path.endswith("/logout"):
+            return await _auth_route(lambda body: auth.logout(), request)
+        if request.method == "GET" and path.endswith("/me"):
+            return auth.me(await auth.resolve_user(request))
+
+        # ── 以下业务所需登录：cookie 里要有注册过的用户名 ──
+        user = await auth.resolve_user(request)
+        gated = not user and not (
+            path.endswith("/health") or path.endswith("/push/pubkey")
+        )
+        if gated:
+            return Response.json({"error": "请先登录"}, status=401)
 
         # 健康检查：顺便确认部署成功、secret 已设
         if request.method == "GET" and path.endswith("/health"):
@@ -152,6 +216,10 @@ class Default(WorkerEntrypoint):
                 "has_key": env_key("GEMINI_API_KEY") is not None,
                 "chain_ready": has,
             })
+
+        # ── 登录后的业务；历史镜像挂在门禁之后 ──
+        if request.method in ("GET", "PUT") and "/hist/" in path:
+            return await _hist_route(self.env, user, request)
 
         # 文字对话：persona 聊天走模型容灾链（非流式）。/history 语义同 /token。
         if request.method == "POST" and path.endswith("/chat"):

@@ -50,7 +50,46 @@ leaveChat = () => chat.close();
 
 // ── 联系人页 + 朋友圈：read 自 contacts 数据目录，代码只做渲染 ──
 let findPersona = null;
-loadContacts().then((people) => {
+
+// ── 认证：/me 查 cookie 会话；没登录先在覆盖层上完成登录/注册，再接着装数据 ──
+async function me() {
+  try { return await (await fetch("/me")).json(); } catch { return {}; }
+}
+
+function showAuth() {
+  const box = document.getElementById("auth");
+  const err = document.getElementById("auth-err");
+  const go = async (kind) => {
+    err.textContent = "";
+    const res = await fetch(`/${kind}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        username: document.getElementById("auth-user").value.trim(),
+        password: document.getElementById("auth-pass").value,
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { err.textContent = data.error || `HTTP ${res.status}`; return; }
+    box.hidden = true;
+  };
+  document.getElementById("auth-form").addEventListener("submit", (e) => { e.preventDefault(); go("login"); });
+  document.getElementById("auth-reg").addEventListener("click", () => go("register"));
+
+  box.hidden = false;
+  return go("login").then(); // 首次点进来大概率是想直接登录
+}
+
+// 登录挡住一切数据装载：聊天列表、联系人、朋友圈都要会话才有意义。
+async function boot() {
+  const status = await me();
+  if (!status.user) await showAuth(); // 登录/注册成了才会往下走
+  loadPeople();
+}
+boot();
+
+function loadPeople() {
+  loadContacts().then((people) => {
   findPersona = (unit) => people.find((p) => p.id === unit) || null;
   const contactList = document.getElementById("contact-list");
   const statusBits = [];
@@ -95,6 +134,7 @@ loadContacts().then((people) => {
     }
   }
 });
+}
 
 for (const tab of tabs) {
   tab.addEventListener("click", () => showView(tab.dataset.view));
