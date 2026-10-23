@@ -57,27 +57,40 @@ async function me() {
 }
 
 function showAuth() {
-  const box = document.getElementById("auth");
-  const err = document.getElementById("auth-err");
-  const go = async (kind) => {
-    err.textContent = "";
-    const res = await fetch(`/${kind}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        username: document.getElementById("auth-user").value.trim(),
-        password: document.getElementById("auth-pass").value,
-      }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) { err.textContent = data.error || `HTTP ${res.status}`; return; }
-    box.hidden = true;
-  };
-  document.getElementById("auth-form").addEventListener("submit", (e) => { e.preventDefault(); go("login"); });
-  document.getElementById("auth-reg").addEventListener("click", () => go("register"));
+  return new Promise((done) => { // 登录/注册成功才 resolve，boot 才往下走
+    const box = document.getElementById("auth");
+    const err = document.getElementById("auth-err");
+    const loginBtn = box.querySelector(".auth__primary");
+    const busy = (on) => { loginBtn.disabled = document.getElementById("auth-reg").disabled = on; };
 
-  box.hidden = false;
-  return go("login").then(); // 首次点进来大概率是想直接登录
+    const go = async (kind) => {
+      err.textContent = "……"; // 请求在途先给个动静：R2 读写要 1-2 秒，别让人以为死了
+      busy(true);
+      try {
+        const res = await fetch(`/${kind}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            username: document.getElementById("auth-user").value.trim(),
+            password: document.getElementById("auth-pass").value,
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { err.textContent = data.error || `HTTP ${res.status}`; return; }
+        box.hidden = true; // 成功：覆盖层撤走
+        done();
+      } catch {
+        err.textContent = "Network issue — try again";
+      } finally {
+        busy(false);
+      }
+    };
+    document.getElementById("auth-form").addEventListener("submit", (e) => { e.preventDefault(); go("login"); });
+    document.getElementById("auth-reg").addEventListener("click", () => go("register"));
+
+    box.hidden = false;
+    go("login"); // 自动登录已有会话的人：成了覆盖层自己退场
+  });
 }
 
 // 登录挡住一切数据装载：聊天列表、联系人、朋友圈都要会话才有意义。

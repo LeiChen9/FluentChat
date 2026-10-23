@@ -117,6 +117,8 @@ button { font: inherit; color: inherit; }
 
 .auth__primary { background: var(--accent); color: #fff; }
 .auth__primary:active { opacity: 0.85; }
+.auth__primary:disabled,
+.auth__ghost:disabled { opacity: 0.55; }
 
 .auth__ghost {
   background: none;
