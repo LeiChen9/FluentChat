@@ -912,22 +912,35 @@ export function initChat({ show, back }) {
     setChatState("Connecting…"); // 顶栏给拨号反馈；文案由具体失败路径覆盖
 
     // 1. 换一次性 token。prompt 钉在 token 里，前端碰不到。
+    // 主屏 web app / 弱网首猜偶发「Load failed」，等半秒补一枪留个后路。
     let token;
-    try {
-      const res = await fetch("/token", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        // history：把之前聊过的交给后端钉进 system instruction，
-        // 模型接着上次聊，不再重头开场。
-        body: JSON.stringify({ unit: u.id, history: packHist() }),
-      });
-      const data = await res.json();
+    const grabToken = () => fetch("/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      // history：把之前聊过的交给后端钉进 system instruction，
+      // 模型接着上次聊，不再重头开场。
+      body: JSON.stringify({ unit: u.id, history: packHist() }),
+    }).then(async (res) => {
+      const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.token) throw new Error(data.error || `HTTP ${res.status}`);
-      token = data.token;
+      return data.token;
+    });
+    try {
+      try {
+        token = await grabToken();
+      } catch (e) {
+        setChatState("Connecting… (retrying)"); // 让用户知道还在拨，不是死了
+        await new Promise((r) => setTimeout(r, 500));
+        if (seq !== connectSeq || unit !== u || mode !== "call") return;
+        token = await grabToken();
+      }
     } catch (e) {
       // 等 token 这会儿用户可能已经退出/换了一个 Unit
       if (seq !== connectSeq || unit !== u) return;
-      abortCall(u, `Can't start a call: ${e.message}`);
+      // 影响面展示：Load failed 这类 TypeError 的根由（cause）/设备形态贴出来好排查
+      const why = [e.message, e.name && e.name !== "Error" ? `(${e.name})` : "",
+        e.cause ? `[${e.cause}]` : ""].filter(Boolean).join(" ");
+      abortCall(u, `Can't start a call: ${why}`);
       return;
     }
     if (seq !== connectSeq || unit !== u || mode !== "call") return; // 等待期间已经挂掉就别再连线
@@ -1057,6 +1070,9 @@ export function initChat({ show, back }) {
     ringback = new Audio("assets/DialMusic.mp3");
     ringback.loop = true;
     ringback.volume = 0.55;
+    // preload=none：别让 5MB 的整文件下载和拨号瞬间的 /token 抢连接
+    // （iOS 主屏 app 里同源 H2 池同起会被掐出 Load failed），改按播放流式拉。
+    ringback.preload = "none";
     ringback.play().catch(() => {});
   }
 
