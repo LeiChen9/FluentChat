@@ -303,3 +303,9 @@ npx wrangler deploy                  # 改了 site/ 必须部署，workers.dev �
 - 本地验证：在线 skip / 离线整链 / 读写账本 / .dev.vars 同步自 .env（chain_ready=6）；本地真命中（.key 全齐后）：sent=3/lastAt/真实模型气泡两条带 t 落镜像。date=null 漏洞线上首命中复核。
 - 已知差异：云册与浏览器册不同本（离线期各记各的，一天总主动频率可超浏览器单册）；推送通知属 3c 未接。
 
+
+## 聊天时间分割线（2026-10-23）
+- addBubble 加微信式规则：上一条带 t 的消息距今 ≥5 分钟或跨天 → 气泡前插居中 `.msg--time`（同天 HH:MM / 跨天「10月23日 HH:MM」）。
+- 语义区分：不传 t = 此刻发送；显式 null = 旧条目（无 t，沿基线不插线）。teardown 清屏重置基线。
+- hist 全部写入点补 `t: Date.now()`（重开后时间线不丢）；teardown 的删气泡选择器天然覆盖 msg--time。
+- 真源注桩边界仿真 9/9 全绿（首条无基线、<5min、≥5min、跨天、legacy 中插不改基线）。部署 a492b0b4。
