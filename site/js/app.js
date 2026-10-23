@@ -96,10 +96,74 @@ function showAuth() {
 // 登录挡住一切数据装载：聊天列表、联系人、朋友圈都要会话才有意义。
 async function boot() {
   const status = await me();
-  if (!status.user) await showAuth(); // 登录/注册成了才会往下走
+  if (!status.user) {
+    await showAuth(); // 登录/注册成了才会往下走
+  }
+  paintProfile(status.user);
   loadPeople();
 }
+
+// ── Me 页个人资料：用户名 + 头像（点行 → 选图 → 压成 128px webp dataURL 上传）──
+function paintProfile(name) {
+  document.getElementById("me-user").textContent = name;
+  fetch("/profile").then((r) => r.json()).then((d) => {
+    if (d.user && d.user !== name) document.getElementById("me-user").textContent = d.user;
+    const av = document.querySelector("#me-avatar img");
+    if (d.avatar) { av.src = d.avatar; av.hidden = false; }
+  }).catch(() => {});
+}
+
+async function setupProfileUI() {
+  const pick = document.getElementById("profile-row");
+  const fileEl = document.getElementById("avatar-file");
+  const errEl = document.getElementById("profile-err");
+  pick.addEventListener("click", () => fileEl.click());
+  fileEl.addEventListener("change", async () => {
+    const file = fileEl.files[0];
+    fileEl.value = ""; // 允许重复选同一张图
+    if (!file) return;
+    errEl.hidden = true;
+    try {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.src = url;
+      await img.decode();
+      URL.revokeObjectURL(url);
+      const SIDE = 128;
+      const crop = Math.min(img.naturalWidth, img.naturalHeight);
+      const canvas = new OffscreenCanvas(SIDE, SIDE);
+      canvas.getContext("2d").drawImage(
+        img,
+        (img.naturalWidth - crop) / 2, (img.naturalHeight - crop) / 2, crop, crop,
+        0, 0, SIDE, SIDE,
+      );
+      const blob = await canvas.convertToBlob({ type: "image/webp", quality: 0.85 })
+        .catch(() => canvas.convertToBlob({ type: "image/png" }));
+      const b64 = await new Promise((done) => {
+        const fr = new FileReader();
+        fr.onload = () => done(fr.result);
+        fr.readAsDataURL(blob);
+      });
+      const res = await fetch("/avatar", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ data: b64 }) });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      const av = document.querySelector("#me-avatar img");
+      av.src = b64;
+      av.hidden = false;
+    } catch (e) {
+      errEl.hidden = false;
+      errEl.textContent = e.message || String(e);
+    }
+  });
+
+  // 登出：清会话 cookie 后整页 reload，boot 会因 /me 空再摆出覆盖层
+  document.getElementById("logout-row").addEventListener("click", async () => {
+    await fetch("/logout", { method: "POST" });
+    location.reload();
+  });
+}
 boot();
+setupProfileUI();
 
 function loadPeople() {
   loadContacts().then((people) => {

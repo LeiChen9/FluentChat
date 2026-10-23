@@ -107,6 +107,16 @@
       </header>
       <ul class="row-list">
         <li>
+          <button class="row" id="profile-row" type="button">
+            <span class="avatar" id="me-avatar"><img src="" alt="" hidden></span>
+            <span class="row__text"><b id="me-user">…</b><i>Avatar & profile</i></span>
+            <input type="file" id="avatar-file" accept="image/*" hidden>
+            <svg class="row__chev" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M9.5 5.5 16 12l-6.5 6.5" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+        </li>
+        <li>
           <button class="row" id="push-enable" type="button">
             <span class="row__icon" aria-hidden="true">
               <svg viewBox="0 0 24 24" width="26" height="26" fill="none">
@@ -123,7 +133,20 @@
       </ul>
       <div class="me-block">
         <pre class="me-err" id="push-err" hidden></pre>
+        <pre class="me-err" id="profile-err" hidden></pre>
       </div>
+      <ul class="row-list">
+        <li>
+          <button class="row" id="logout-row" type="button">
+            <span class="row__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="26" height="26" fill="none">
+                <path d="M14.5 8.5a4 4 0 0 0 0 7M4 12h10M10 8.5 6.5 12l3.5 3.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" fill="none"/>
+              </svg>
+            </span>
+            <span class="row__text"><b>Sign out</b><i>End this device's session</i></span>
+          </button>
+        </li>
+      </ul>
     </section>
 
   </main>

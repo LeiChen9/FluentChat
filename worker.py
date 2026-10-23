@@ -219,6 +219,28 @@ class Default(WorkerEntrypoint):
                 return Response.json({"error": "请先登录"}, status=401)
             return await _hist_route(self.env, user, request)
 
+        # 个人资料：用户名 + 头像（dataURL 存 {user}/avatar.txt，前端直接贴 img.src）
+        if request.method == "GET" and path.endswith("/profile"):
+            if not user:
+                return Response.json({"error": "请先登录"}, status=401)
+            obj = await self.env.DATA.get(f"{user}/avatar.txt")
+            avatar = (await obj.text()) if obj is not None else ""
+            return Response.json({"user": user, "avatar": avatar})
+
+        if request.method == "PUT" and path.endswith("/avatar"):
+            if not user:
+                return Response.json({"error": "请先登录"}, status=401)
+            try:
+                body = await request.json()
+            except Exception:
+                return Response.json({"error": "请求体不是合法 JSON"}, status=400)
+            data = body.get("data") or ""
+            # 只收前端压好的图片 dataURL，128px webp ≈ 几 KB；别让人传大图进来
+            if not (data.startswith("data:image/") and len(data) < 120_000):
+                return Response.json({"error": "头像只收 120KB 内的图片 dataURL"}, status=400)
+            await self.env.DATA.put(f"{user}/avatar.txt", data)
+            return Response.json({"ok": True})
+
         # 文字对话：persona 聊天走模型容灾链（非流式）。/history 语义同 /token。
         if request.method == "POST" and path.endswith("/chat"):
             if not user:

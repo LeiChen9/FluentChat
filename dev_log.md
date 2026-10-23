@@ -287,3 +287,9 @@ npx wrangler deploy                  # 改了 site/ 必须部署，workers.dev �
 - wrangler dev 实测：登录态 PUT/GET 镜像原样往返；dana 拿不到 rice 的镜像（用户隔离）；怪物 unit 400；未登录 401。
 - 待真机确认：覆盖层输入聚焦、iOS 键盘遮挡（下次真机过）。
 
+## Me 页个人资料（2026-10-23）
+- `/profile`（GET 用户名+头像）与 `/avatar`（PUT dataURL，120KB 上限 + data:image/ 前缀校验）；头像存 R2 `{user}/avatar.txt`（128px webp，几 KB/人）。
+- Me 页三行：Profile（.avatar 48px 圆 + 用户名 + chev，点击行触发隐藏 file input）、Notifications（原有）、Sign out（登出会话后整页 reload，boot 因 /me 空再度摆覆盖层）。profile 错误行独立 `#profile-err`。
+- app.js：paintProfile（boot 时并行刷）、头像压图管线（img.decode → OffscreenCanvas cover-crop 128 → webp 0.85 / png 兜底 → FileReader dataURL → PUT）；登出 reload。
+- wrangler dev 实测：PUT/GET 头像往返、超界 400、未登录 401、logout 后 401 全口径过。
+
