@@ -51,8 +51,10 @@ body {
 
 button { font: inherit; color: inherit; }
 
-/* ── 登录/注册覆盖层：占满全屏，卡片居中 ── */
-.auth {
+/* ── 登录/注册覆盖层：占满全屏，卡片居中。
+   选择器挂 :not([hidden])：光靠 hidden 属性压不住这里的 display:grid
+   （作者样式永远赢 UA 的 [hidden]{display:none}，覆盖层就会赖着不走）── */
+.auth:not([hidden]) {
   position: fixed;
   inset: 0;
   z-index: 60;
