@@ -1065,14 +1065,20 @@ export function initChat({ show, back }) {
   // 手势时机不对时宁可无声也不把通话卡死）。
   let ringback = null;
 
+  // 彩铃音频预取：开屏就在后台把 mp3 备成本地 Blob，拨号那刻秒响。
+  // 等「connecting 好久才出铃声」的根因就是把 5MB mp3 留到拨号那刻才从
+  // 网络现拉（手机代理/弱网下明显拖后）。
+  let ringbackUrl = null;
+  fetch("assets/DialMusic.mp3")
+    .then((r) => (r.ok ? r.blob() : null))
+    .then((blob) => { if (blob) ringbackUrl = URL.createObjectURL(blob); })
+    .catch(() => {}); // 预取败了不打紧，拨号时退回网络流式路径
+
   function startRingback() {
     stopRingback(); // 连拨以防上一次的尾巴还在
-    ringback = new Audio("assets/DialMusic.mp3");
+    ringback = new Audio(ringbackUrl || "assets/DialMusic.mp3");
     ringback.loop = true;
     ringback.volume = 0.55;
-    // preload=none：别让 5MB 的整文件下载和拨号瞬间的 /token 抢连接
-    // （iOS 主屏 app 里同源 H2 池同起会被掐出 Load failed），改按播放流式拉。
-    ringback.preload = "none";
     ringback.play().catch(() => {});
   }
 
