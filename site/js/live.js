@@ -1262,8 +1262,20 @@ export function initChat({ show, back }) {
   callEnd.addEventListener("click", hangUp);
   resetBtn.addEventListener("click", resetChat);
 
+  // 输入框随内容增高，超过 40vh 后内部滚动（同 argus composer）
+  const fitInput = () => {
+    input.style.height = "auto";
+    input.style.height = `${input.scrollHeight}px`;
+  };
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      bar.requestSubmit();
+    }
+  });
   input.addEventListener("input", () => {
     sendBtn.disabled = !input.value.trim();
+    fitInput();
   });
 
   bar.addEventListener("submit", (e) => {
@@ -1271,6 +1283,7 @@ export function initChat({ show, back }) {
     const text = input.value.trim();
     if (!text) return;
     input.value = "";
+    fitInput();
     sendBtn.disabled = true;
     cancelReply(unit);
     cancelDelivery();

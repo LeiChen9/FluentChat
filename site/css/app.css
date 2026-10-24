@@ -726,15 +726,20 @@ button { font: inherit; color: inherit; }
 .chat-input {
   flex: 1 1 auto;
   min-width: 0;
-  padding: 10px 15px;
+  min-height: 40px;
+  max-height: 40vh;
+  padding: 9px 15px;
   border: 0.5px solid var(--hairline);
-  border-radius: 999px;
+  border-radius: 20px;
   background: var(--bg);
   font: inherit;
   /* 16px 起：再小 iOS 聚焦会把页面放大 */
   font-size: 16px;
+  line-height: 20px;
   color: var(--ink);
   outline: none;
+  resize: none;
+  overflow-y: auto;
   -webkit-appearance: none;
 }
 .chat-input::placeholder { color: var(--ink-3); }
