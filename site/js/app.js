@@ -1,4 +1,4 @@
-import { initChat } from "./live.js?v=20261024-1";
+import { initChat, fmtRowTime } from "./live.js?v=20261024-1";
 import { loadContacts } from "./personas.js?v=20261024-1";
 import { statusOf, setViewerKey } from "./rhythm.js?v=20261024-2";
 // 四个主 tab + 一个对话子页（对应 line/whatsapp 首层导航）。
@@ -209,8 +209,9 @@ function loadPeople() {
 
     const momentList = document.getElementById("moment-list");
     momentList.replaceChildren();
-    for (const p of people) {
-      for (const m of p.moments) {
+    const moments = people.flatMap((p) => p.moments.map((m) => ({ p, m })))
+      .sort((a, b) => new Date(b.m.timestamp) - new Date(a.m.timestamp));
+    for (const { p, m } of moments) {
         const card = document.createElement("article");
         card.className = "moment";
         card.innerHTML =
@@ -218,11 +219,10 @@ function loadPeople() {
           `<div class="moment__body">` +
           `<b class="moment__name">${p.name}</b>` +
           `<p class="moment__text"></p>` +
-          `<i class="moment__time">${m.time}</i>` +
+          `<i class="moment__time">${fmtRowTime(m.timestamp)}</i>` +
           `</div>`;
         card.querySelector(".moment__text").textContent = m.text;
         momentList.append(card);
-      }
     }
   };
 

@@ -15,6 +15,21 @@ const WS_BASE =
 const MIC_RATE = 16000;
 const OUT_RATE = 24000;
 
+// 列表时间戳：当天显示时间，昨天 Yesterday，一周内周几，更早显示日期（Nov 15th）
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const DAYS = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+export function fmtRowTime(ts) {
+  const d = new Date(ts), now = new Date();
+  const gap = Math.round((new Date(now.getFullYear(), now.getMonth(), now.getDate())
+    - new Date(d.getFullYear(), d.getMonth(), d.getDate())) / 86400000);
+  if (gap === 0) return `${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`;
+  if (gap === 1) return "Yesterday";
+  if (gap > 0 && gap < 7) return DAYS[d.getDay()];
+  const n = d.getDate();
+  const suf = n % 10 === 1 && n !== 11 ? "st" : n % 10 === 2 && n !== 12 ? "nd" : n % 10 === 3 && n !== 13 ? "rd" : "th";
+  return `${MONTHS[d.getMonth()]} ${n}${suf}`;
+}
+
 // 挂断后发给 AI 的复盘指令。
 // base.md 里复盘是「对话式点评、说完等用户反应」，这条是追在后面的用户输入，
 // 把它掰成一次性交稿的中文文字：不分轮、不提问、直接给正文。
@@ -118,20 +133,6 @@ export function initChat({ show, back }) {
     const last = talk[talk.length - 1];
     return last ? clip((last.who === "me" ? "You: " : "") + last.text) : null;
   };
-  // 列表时间戳：当天显示时间，昨天 Yesterday，一周内周几，更早显示日期（Nov 15th）
-  const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-  const DAYS = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
-  function fmtRowTime(ts) {
-    const d = new Date(ts), now = new Date();
-    const gap = Math.round((new Date(now.getFullYear(), now.getMonth(), now.getDate())
-      - new Date(d.getFullYear(), d.getMonth(), d.getDate())) / 86400000);
-    if (gap === 0) return `${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`;
-    if (gap === 1) return "Yesterday";
-    if (gap > 0 && gap < 7) return DAYS[d.getDay()];
-    const n = d.getDate();
-    const suf = n % 10 === 1 && n !== 11 ? "st" : n % 10 === 2 && n !== 12 ? "nd" : n % 10 === 3 && n !== 13 ? "rd" : "th";
-    return `${MONTHS[d.getMonth()]} ${n}${suf}`;
-  }
 
   // ── 聊天列表：persona 好友，一行一个（read 自 contacts 数据目录） ──
   const rowOf = new Map(); // persona.id -> { li, preview, time } 列表行，有新消息要置顶
