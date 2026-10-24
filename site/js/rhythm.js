@@ -19,6 +19,8 @@ const WARM_AWAY = [45, 180];  // 走开多久（秒），回来再回
 
 // 状态缓存：id -> { anchor, state, at, until? }
 const live = new Map();
+let viewerKey = "";
+export function setViewerKey(key) { viewerKey = String(key || ""); live.clear(); }
 
 // 基调 = hours 表本位（表坏降级 active）。
 function isDayOff(p, date) {
@@ -38,11 +40,13 @@ function anchorOf(p, date) {
 // 夹在中间的 away 两侧各 0.1。offline 不漂。
 const DRIFT = { active: [0.8, 0.2, 0], away: [0.1, 0.8, 0.1], busy: [0.05, 0.15, 0.8] };
 
-function driftState(anchor, p) {
+function driftState(anchor, p, date) {
   const i = ["active", "away", "busy"].indexOf(anchor);
   if (i < 0) return anchor;
   const w = DRIFT[anchor];
-  const r = Math.random();
+  let r = 2166136261;
+  for (const c of `${viewerKey}|${p?.id}|${Math.floor(+date / STALE)}`) r = Math.imul(r ^ c.charCodeAt(0), 16777619);
+  r = (r >>> 0) / 4294967296;
   const chance = p?.schedule?.activeChance?.[anchor];
   if (chance != null) return r < chance ? "active" : (r - chance) / (1 - chance) < w[1] / (1 - w[0]) ? "away" : "busy";
   return ["active", "away", "busy"][r < w[0] ? 0 : r < w[0] + w[1] ? 1 : 2];
@@ -57,7 +61,7 @@ function settle(p, date) {
   const anchor = anchorOf(p, date);
   // at 只记重掷时刻，别刷成 now —— 否则状态永远「新鲜」，两分钟重掷形同虚设
   const fresh = rec.anchor === anchor && now - rec.at < STALE && !rec.until;
-  const state = fresh ? rec.state : driftState(anchor, p);
+  const state = fresh ? rec.state : driftState(anchor, p, date);
   live.set(p?.id, { anchor, state, at: fresh ? rec.at : now });
   return state;
 }

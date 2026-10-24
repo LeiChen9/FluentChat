@@ -1,6 +1,6 @@
 import { initChat } from "./live.js?v=20261024-1";
 import { loadContacts } from "./personas.js?v=20261024-1";
-import { statusOf } from "./rhythm.js";
+import { statusOf, setViewerKey } from "./rhythm.js?v=20261024-2";
 // 四个主 tab + 一个对话子页（对应 line/whatsapp 首层导航）。
 const VIEWS = ["chats", "contacts", "moments", "me", "chat"];
 
@@ -78,7 +78,7 @@ function showAuth() {
         const data = await res.json().catch(() => ({}));
         if (!res.ok) { err.textContent = data.error || `HTTP ${res.status}`; return; }
         box.hidden = true; // 成功：覆盖层撤走
-        done();
+        done(data.user || document.getElementById("auth-user").value.trim());
       } catch {
         err.textContent = "Network issue — try again";
       } finally {
@@ -98,7 +98,9 @@ function showAuth() {
 async function boot() {
   loadPeople();
   const status = await me();
-  if (!status.user) await showAuth(); // 登录/注册成了才会接资料和云镜
+  const user = status.user || await showAuth(); // 登录/注册成了才会接资料和云镜
+  setViewerKey(user);
+  chat.refreshStatuses();
   paintProfile(status.user);
   startHeartbeat();
   chat.prewarmHist();

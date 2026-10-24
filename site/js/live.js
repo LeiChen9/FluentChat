@@ -4,7 +4,7 @@
 // Worker 全程只签 token，不碰音频。
 
 import { loadContacts } from "./personas.js?v=20261024-1";
-import { statusOf, nextReplyDelay, burstOf, noteReply } from "./rhythm.js";
+import { statusOf, nextReplyDelay, burstOf, noteReply } from "./rhythm.js?v=20261024-2";
 import { proactiveTick, engageBump, noteUserTalk } from "./proactive.js";
 
 const WS_BASE =
@@ -595,6 +595,8 @@ export function initChat({ show, back }) {
       fetch(`/hist/${p.id}`).then((r) => r.ok ? r.json() : null).then((arr) => {
         if (!loadHist(p.id).length && Array.isArray(arr) && arr.length) {
           try { localStorage.setItem(HIST_KEY + p.id, JSON.stringify(arr.slice(-HIST_MAX))); } catch {}
+          const row = rowOf.get(p.id), last = arr.filter((h) => h.who === "me" || h.who === "ai").at(-1);
+          if (row && last) { row.preview.textContent = clip((last.who === "me" ? "You: " : "") + last.text); row.time.textContent = fmtRowTime(last.t || Date.now()); }
         }
       }).catch(() => {});
     }));
@@ -1275,6 +1277,7 @@ export function initChat({ show, back }) {
   return {
     close: teardown,
     prewarmHist,
+    refreshStatuses: paintDots,
     // 联系人页也从这里进对话
     open: openChat,
   };
