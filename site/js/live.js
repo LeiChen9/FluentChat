@@ -109,6 +109,8 @@ export function initChat({ show, back }) {
 
   // 回复节奏：状态挂在 persona 上（replies），切走聊天页也不打断。
   const replies = new Map(); // persona.id -> { texts, delay, gen, retry, ready, text, wait, used, req }
+  const proEpoch = new Map(); // persona.id -> 代号；用户开口/Reset 作废在途 proactive
+  const proFail = new Map(); // persona.id -> proactive 失败后的重试 timer
   let delivery = null;       // 当前聊天中尚未显示的 AI 气泡
   let burstArmed = 0;    // 本条回复起角色还能补几轮
   let burstTimer = 0;    // 补话定时器
@@ -378,7 +380,15 @@ export function initChat({ show, back }) {
   const THINK_MIN = 1200;
   const THINK_MAX = 9000;
 
+  // 用户真正开口：在途 proactive 和它的重试都作废，不能回头再补一条旧上下文
+  function invalidateProactive(u) {
+    proEpoch.set(u.id, (proEpoch.get(u.id) || 0) + 1);
+    const retry = proFail.get(u.id);
+    if (retry) { clearTimeout(retry); proFail.delete(u.id); }
+  }
+
   function beginReply(u, directive) {
+    invalidateProactive(u);
     let st = replies.get(u.id);
     if (st) return st;
     st = { texts: [], delay: 0, gen: null, retry: 0, ready: false, text: "", wait: 0, used: 0, req: directive || "", cancelled: false };
@@ -451,6 +461,7 @@ export function initChat({ show, back }) {
 
   // 拆掉某人的在途回复（Reset 清历史时用）：定时器全清，状态退场
   function cancelReply(u) {
+    invalidateProactive(u);
     const st = replies.get(u.id);
     if (!st) return;
     st.cancelled = true;
@@ -488,24 +499,35 @@ export function initChat({ show, back }) {
     "quick thing. 1-2 short casual lines. Don't start a big new topic.)";
 
   let proTimer = 0;
-  const proFail = new Map(); // persona.id -> 剩余重试（避开每日名额浪费）
+  const proBusy = new Set(); // persona.id -> proactive 正在生成
 
   function startProactive() {
     if (proTimer) return;
     proTimer = setInterval(() => {
       paintDots();
-      for (const p of proactiveTick(people, new Date())) fireProactive(p);
+      // 有回复/主动消息在途的人不参与抽签，避免两路生成共用旧历史、也避免白扣名额
+      const idle = people.filter((p) =>
+        !replies.has(p.id) && !proBusy.has(p.id) && !proFail.has(p.id));
+      for (const p of proactiveTick(idle, new Date())) fireProactive(p);
     }, PRO_MINUTE);
   }
 
   async function fireProactive(p, retried) {
-    if (unit === p) {
-      // 就在这个对话页：回复已在途（在生成/在等）时别抢话
-      if (mode !== "text" || replies.has(p.id)) return;
-    }
+    // 不光当前对话页：后台的人也不能和回复生成撞车
+    if (replies.has(p.id) || proBusy.has(p.id)) return;
+    if (unit === p && mode !== "text") return;
+    const epoch = (proEpoch.get(p.id) || 0) + 1;
+    proEpoch.set(p.id, epoch);
+    proBusy.add(p.id);
     noteReply(p, new Date()); // 想开口先升 active
-    const text = clean(await genProactive(p, retried));
-    if (!text) return;
+    let text = "";
+    try {
+      text = clean(await genProactive(p, retried, epoch));
+    } finally {
+      proBusy.delete(p.id);
+    }
+    // 生成期间用户开口了：这份旧上下文作废
+    if (!text || proEpoch.get(p.id) !== epoch || replies.has(p.id)) return;
     deliverProactive(p, text);
   }
 
@@ -527,14 +549,15 @@ export function initChat({ show, back }) {
     return text;
   }
 
-  async function genProactive(p, retried) {
+  async function genProactive(p, retried, epoch) {
     try {
       const text = await genChat(p, PRO_REQ);
       proFail.delete(p.id);
       return text;
     } catch (e) {
       console.warn("proactive:", e);
-      if (!retried) proFail.set(p.id, setTimeout(() => {
+      // 用户这期间已经开口的话，这次失败不再安排重试
+      if (!retried && proEpoch.get(p.id) === epoch) proFail.set(p.id, setTimeout(() => {
         proFail.delete(p.id);
         fireProactive(p, true); // 只重试一次：成了就没浪费每日名额
       }, PRO_RETRY_MS));

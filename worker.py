@@ -287,9 +287,9 @@ class Default(WorkerEntrypoint):
                     {"error": f"/chat 只面向 persona：{sorted(PERSONAS)}"},
                     status=400)
             history = sanitize_history(body.get("history"))
-            print(f"chat request unit={unit} history={len(history)}")
             # 可选：主动消息场景的临时指令（最后一条 user 消息，模型照办开口）
             directive = str(body.get("directive") or "").strip()[:400]
+            print(f"chat request unit={unit} history={len(history)} directive={1 if directive else 0}")
             try:
                 msgs = to_messages(unit, history)
                 if directive:
