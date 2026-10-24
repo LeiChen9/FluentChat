@@ -1,5 +1,5 @@
-import { initChat } from "./live.js?v=20261023-4";
-import { loadContacts } from "./personas.js";
+import { initChat } from "./live.js?v=20261024-1";
+import { loadContacts } from "./personas.js?v=20261024-1";
 import { statusOf } from "./rhythm.js";
 // 四个主 tab + 一个对话子页（对应 line/whatsapp 首层导航）。
 const VIEWS = ["chats", "contacts", "moments", "me", "chat"];

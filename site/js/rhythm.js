@@ -36,7 +36,7 @@ function anchorOf(p, date) {
 
 // 80/15/5 邻档漂移：基调自己 0.8；边上两档朝邻档 15、跨档 5；
 // 夹在中间的 away 两侧各 0.1。offline 不漂。
-const DRIFT = { active: [0.8, 0.15, 0.05], away: [0.1, 0.8, 0.1], busy: [0.05, 0.15, 0.8] };
+const DRIFT = { active: [0.8, 0.2, 0], away: [0.1, 0.8, 0.1], busy: [0.05, 0.15, 0.8] };
 
 function driftState(anchor, p) {
   const i = ["active", "away", "busy"].indexOf(anchor);

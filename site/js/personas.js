@@ -5,7 +5,7 @@
 // contact.json：一人一份画像 JSON（name/status/preview/time/avatar + base/burst/hours/glow）。
 // moments.md：一行一条动态 `when — text`，# 开头当注释跳过。
 
-const IDS = ["leo", "chole", "sam"];
+const IDS = ["leo", "chole", "sam", "Fiona"];
 const DIR = "assets/contacts/";
 
 async function fetchText(url) {

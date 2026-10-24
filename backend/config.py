@@ -18,11 +18,12 @@ UNITS = {f"unit-{i:02d}" for i in range(1, 13)}
 
 # Persona 好友（聊天列表）。prompt 是 prompts/personas/persona-*.md，
 # 每人一条自己的声线 —— 见 prompts/personas.md 的声线速查表。
-PERSONAS = {"persona-leo", "persona-chole", "persona-sam"}
+PERSONAS = {"persona-leo", "persona-chole", "persona-sam", "persona-Fiona"}
 VOICE_BY_ID = {
     "persona-leo": "Puck",    # Upbeat · 男
     "persona-chole": "Leda",  # Youthful · 女
     "persona-sam": "Umbriel", # Easy-going · 男
+    "persona-Fiona": "Aoede", # Calm · 女
 }
 
 # 随 token 注入 system instruction 的历史：掐条数、掐单条长度，

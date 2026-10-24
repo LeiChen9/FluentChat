@@ -30,12 +30,11 @@ from backend.config import (AUTH_TOKENS_URL, HIST_MAX_CHARS, HIST_MAX_ITEMS,
 
 
 def to_messages(unit: str, history: list[dict]) -> list[dict]:
-    """persona prompt（只性格与小传，无教学规则）钉 system，历史转 user/assistant。"""
-    sys_text = read_prompt(unit) + "\n" + read_prompt("text_style")
+    """NPC 只使用 contacts 下的人设 prompt，历史转 user/assistant。"""
+    sys_text = read_prompt(unit)
     msgs = [{"role": "system", "content": sys_text}]
     if not history:
-        msgs.append({"role": "user",
-                     "content": "(You just came online. Send your opening line.)"})
+        msgs.append({"role": "user", "content": "(Wait for the user to start.)"})
         return msgs
     for h in history:
         msgs.append({"role": "user" if h["who"] == "me" else "assistant",
@@ -135,7 +134,8 @@ def build_system_instruction(
     有历史时历史钉在最后 —— 同理，它要盖过 base.md「第一轮直接说开场白」。
     """
     base_name = "base-ch2.md" if unit in ("unit-07", "unit-08", "unit-09", "unit-10", "unit-11", "unit-12") else "base.md"
-    text = f"{read_prompt(base_name)}\n\n{read_prompt(f'{unit}.md')}"
+    text = (read_prompt(unit) if unit in PERSONAS else
+            f"{read_prompt(base_name)}\n\n{read_prompt(f'{unit}.md')}")
     if not history:
         return text
     speaker = {"me": "用户", "ai": "你"}
@@ -287,6 +287,7 @@ class Default(WorkerEntrypoint):
                     {"error": f"/chat 只面向 persona：{sorted(PERSONAS)}"},
                     status=400)
             history = sanitize_history(body.get("history"))
+            print(f"chat request unit={unit} history={len(history)}")
             # 可选：主动消息场景的临时指令（最后一条 user 消息，模型照办开口）
             directive = str(body.get("directive") or "").strip()[:400]
             try:
@@ -295,6 +296,7 @@ class Default(WorkerEntrypoint):
                     msgs.append({"role": "user", "content": directive})
                 out = await run_chain(msgs)
             except RuntimeError as e:
+                print(f"chat failure unit={unit}: {e}")
                 return Response.json({"error": str(e)}, status=502)
             return Response.json(out)
 

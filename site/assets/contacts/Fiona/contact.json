@@ -1,0 +1,27 @@
+{
+  "name": "Fiona",
+  "status": "Here whenever you want to practise.",
+  "preview": "Tell me what you would like to practise today.",
+  "time": "Active now",
+  "avatar": "assets/contacts/Fiona/avatar.png",
+  "base": [0, 20],
+  "reply": "normal",
+  "maxSentences": null,
+  "burst": [0, 0],
+  "glow": 1440,
+  "activeChance": {"away": 1, "busy": 1},
+  "reviewAfterCall": true,
+  "hours": [
+    "active", "active", "active", "active", "active", "active",
+    "active", "active", "active", "active", "active", "active",
+    "active", "active", "active", "active", "active", "active",
+    "active", "active", "active", "active", "active", "active"
+  ],
+  "hoursWeekend": [
+    "active", "active", "active", "active", "active", "active",
+    "active", "active", "active", "active", "active", "active",
+    "active", "active", "active", "active", "active", "active",
+    "active", "active", "active", "active", "active", "active"
+  ],
+  "holidays": []
+}

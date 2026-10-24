@@ -10,6 +10,7 @@
     60
   ],
   "reply": "spike",
+  "maxSentences": 1,
   "burst": [
     0.6,
     2

@@ -10,6 +10,7 @@
     240
   ],
   "reply": "skew",
+  "maxSentences": 4,
   "burst": [
     0.25,
     1

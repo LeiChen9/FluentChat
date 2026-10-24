@@ -4,6 +4,12 @@
   "main": "worker.py",
   "compatibility_date": "2026-08-01",
   "compatibility_flags": ["python_workers"],
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "invocation_logs": true
+    }
+  },
 
   // 前端由 Worker 一起发，这样页面和 /token 同源，不需要 CORS，
   // 而且 workers.dev 本身就是 HTTPS，iOS 才拿得到麦克风。
