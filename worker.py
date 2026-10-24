@@ -25,20 +25,29 @@ from backend import cloud_npc
 from backend.common import (ENDPOINTS, _load_subs, _save_subs,
                             bind_worker_env, env_key, run_chain, vapid_pubkey)
 from backend.prompt_data import PROMPTS
+from backend.time_context import DEFAULT_TZ_OFFSET, build_time_context, clamp_tz
 from backend.config import (AUTH_TOKENS_URL, HIST_MAX_CHARS, HIST_MAX_ITEMS,
                             MODEL, PERSONAS, UNITS, VOICE, VOICE_BY_ID)
 
 
-def to_messages(unit: str, history: list[dict]) -> list[dict]:
+def to_messages(
+    unit: str, history: list[dict], tz_offset: int = DEFAULT_TZ_OFFSET
+) -> list[dict]:
     """NPC 只使用 contacts 下的人设 prompt，历史转 user/assistant。"""
-    sys_text = "This is an online chat only.\n\n" + read_prompt(unit)
+    ctx = build_time_context(history, tz_offset)
+    sys_text = (
+        f"{read_prompt('text_style')}\n\n"
+        f"{read_prompt(unit)}\n\n"
+        f"{ctx['header']}"
+    )
     msgs = [{"role": "system", "content": sys_text}]
     if not history:
         msgs.append({"role": "user", "content": "(Wait for the user to start.)"})
         return msgs
-    for h in history:
+    for h, dated in zip(history, ctx["history"]):
+        prefix = f"{dated['prefix']} " if dated["prefix"] else ""
         msgs.append({"role": "user" if h["who"] == "me" else "assistant",
-                     "content": h["text"]})
+                     "content": prefix + h["text"]})
     return msgs
 
 
@@ -100,9 +109,10 @@ async def _hist_route(env, user: str, request) -> Response:
 
 
 def sanitize_history(raw) -> list[dict]:
-    """清洗前端带回来的聊天历史：只认 [{"who": me|ai, "text": str}, ...]。
+    """清洗前端带回来的聊天历史：[{"who": me|ai, "text": str, "t": ms}, ...]。
 
     历史会钉进 system instruction，所以条数和单条长度都要掐。
+    t 只用于给模型时间感，不参与正文截断。
     复盘卡片（kind=review）前端就不带，带了也会在这里被丢掉。
     """
     if not isinstance(raw, list):
@@ -118,30 +128,54 @@ def sanitize_history(raw) -> list[dict]:
         text = text.strip()
         if not text:
             continue
-        out.append({"who": who, "text": text[:HIST_MAX_CHARS]})
+        entry = {"who": who, "text": text[:HIST_MAX_CHARS]}
+        ts = item.get("t")
+        if isinstance(ts, (int, float)) and ts > 0:
+            entry["t"] = int(ts)
+        out.append(entry)
         if len(out) >= HIST_MAX_ITEMS:
             break
     return out
 
 
 def build_system_instruction(
-    unit: str, history: list[dict] | None = None
+    unit: str, history: list[dict] | None = None,
+    tz_offset: int = DEFAULT_TZ_OFFSET
 ) -> str:
-    """把基础教学规则和本次 Unit 的话题拼成一份完整 prompt。
+    """把基础教学规则、persona 与本次话题拼成一份完整 prompt。
 
     顺序有讲究：先给通用对话规则，再给本次话题。
     后写的更贴近当前任务，模型更容易听话题部分的。
     有历史时历史钉在最后 —— 同理，它要盖过 base.md「第一轮直接说开场白」。
     """
+    history = history or []
     base_name = "base-ch2.md" if unit in ("unit-07", "unit-08", "unit-09", "unit-10", "unit-11", "unit-12") else "base.md"
-    text = (read_prompt(unit) if unit in PERSONAS else
-            f"{read_prompt(base_name)}\n\n{read_prompt(f'{unit}.md')}")
+    if unit in PERSONAS:
+        ctx = build_time_context(history, tz_offset)
+        text = (
+            f"{read_prompt('text_style')}\n\n"
+            f"{read_prompt(unit)}\n\n"
+            f"{ctx['header']}"
+        )
+        dated = ctx["history"]
+    else:
+        text = f"{read_prompt(base_name)}\n\n{read_prompt(f'{unit}.md')}"
+        dated = [{"who": h["who"], "text": h["text"], "prefix": ""} for h in history]
     if not history:
         return text
     speaker = {"me": "用户", "ai": "你"}
     lines = "\n".join(
-        f"{speaker[h['who']]}：{h['text']}" for h in history
+        f"{d['prefix'] + ' ' if d['prefix'] else ''}{speaker[d['who']]}：{d['text']}"
+        for d in dated
     )
+    if unit in PERSONAS:
+        return (
+            f"{text}\n\n"
+            "# 此前的对话记录\n"
+            "这是你和该用户之前的聊天与通话记录（含语音通话的转写），"
+            "按时间从早到晚，日期变化时标出：\n"
+            f"{lines}"
+        )
     return (
         f"{text}\n\n"
         "# 此前的对话记录\n"
@@ -155,7 +189,8 @@ def build_system_instruction(
 
 
 def build_token_payload(
-    unit: str, history: list[dict] | None = None
+    unit: str, history: list[dict] | None = None,
+    tz_offset: int = DEFAULT_TZ_OFFSET
 ) -> dict:
     """构造签发请求体。unit 参数横跨两类 id：unit-XX 和 persona-xxx。
 
@@ -173,7 +208,7 @@ def build_token_payload(
             "model": f"models/{MODEL}",
             "systemInstruction": {
                 "parts": [
-                    {"text": build_system_instruction(unit, history)}
+                    {"text": build_system_instruction(unit, history, tz_offset)}
                 ]
             },
             "generationConfig": {
@@ -287,11 +322,12 @@ class Default(WorkerEntrypoint):
                     {"error": f"/chat 只面向 persona：{sorted(PERSONAS)}"},
                     status=400)
             history = sanitize_history(body.get("history"))
+            tz_offset = clamp_tz(body.get("tz"))
             # 可选：主动消息场景的临时指令（最后一条 user 消息，模型照办开口）
             directive = str(body.get("directive") or "").strip()[:400]
             print(f"chat request unit={unit} history={len(history)} directive={1 if directive else 0}")
             try:
-                msgs = to_messages(unit, history)
+                msgs = to_messages(unit, history, tz_offset)
                 if directive:
                     msgs.append({"role": "user", "content": directive})
                 out = await run_chain(msgs)
@@ -384,6 +420,7 @@ class Default(WorkerEntrypoint):
 
         # 聊天历史（可选）：上次聊过的内容钉进 prompt，模型有记忆
         history = sanitize_history(body.get("history"))
+        tz_offset = clamp_tz(body.get("tz"))
 
         # 调 Gemini 签发 token；fetch / 非 200 / 解析三种不快活统一 502
         try:
@@ -394,7 +431,7 @@ class Default(WorkerEntrypoint):
                     "x-goog-api-key": env_key("GEMINI_API_KEY"),
                     "Content-Type": "application/json",
                 },
-                body=json.dumps(build_token_payload(unit, history)),
+                body=json.dumps(build_token_payload(unit, history, tz_offset)),
             )
             if resp.status != 200:
                 detail = await resp.text()

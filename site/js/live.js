@@ -543,6 +543,7 @@ export function initChat({ show, back }) {
         unit: p.id,
         history: packFor(p),
         directive: directive || undefined,
+        tz: new Date().getTimezoneOffset(),
       }),
     });
     const data = await res.json();
@@ -573,7 +574,7 @@ export function initChat({ show, back }) {
     if (unit === p) return packHist();
     return loadHist(p.id).filter((h) => h.who === "me" || h.who === "ai")
       .slice(-HIST_FOR_AI)
-      .map((h) => ({ who: h.who, text: String(h.text).slice(0, HIST_CHARS) }));
+      .map((h) => ({ who: h.who, text: String(h.text).slice(0, HIST_CHARS), t: h.t || null }));
   }
 
   // 落地：开着本对话就在页里出气泡进记忆；没开着只落盘 + 刷列表预览。
@@ -668,7 +669,7 @@ export function initChat({ show, back }) {
     return hist
       .filter((h) => h.who === "me" || h.who === "ai")
       .slice(-HIST_FOR_AI)
-      .map((h) => ({ who: h.who, text: String(h.text).slice(0, HIST_CHARS) }));
+      .map((h) => ({ who: h.who, text: String(h.text).slice(0, HIST_CHARS), t: h.t || null }));
   }
 
   // 出错时显示在界面上，别只 console.warn（手机上看不到 console）
@@ -1003,7 +1004,11 @@ export function initChat({ show, back }) {
       headers: { "Content-Type": "application/json" },
       // history：把之前聊过的交给后端钉进 system instruction，
       // 模型接着上次聊，不再重头开场。
-      body: JSON.stringify({ unit: u.id, history: packHist() }),
+      body: JSON.stringify({
+        unit: u.id,
+        history: packHist(),
+        tz: new Date().getTimezoneOffset(),
+      }),
     }).then(async (res) => {
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.token) throw new Error(data.error || `HTTP ${res.status}`);
