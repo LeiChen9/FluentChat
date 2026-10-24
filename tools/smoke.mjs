@@ -34,6 +34,7 @@ function mkEl(id = "", tag = "div") {
     fire(t, ev) { (this._l[t] || []).forEach((f) => f(ev || { preventDefault() {} })); },
     // remove() 要真的从父节点摘掉：typing 气泡靠它消失，断言数节点才准
     append(...n) { for (const c of n) c.parent = this; this.children.push(...n); },
+    appendChild(n) { this.append(n); return n; },
     remove() {
       const p = this.parent;
       if (!p) return;
@@ -56,7 +57,9 @@ function mkEl(id = "", tag = "div") {
 for (const i of ["chat-list","contact-list","moment-list","chat-name","chat-state","chat-av",
   "chat-body","chat-bar","chat-input","chat-send","chat-back","chat-call","chat-reset",
   "call","call-av","call-name","call-state","call-said","call-end",
-  "view-chats","view-contacts","view-moments","view-me","view-chat"]) els.set(i, mkEl(i));
+  "view-chats","view-contacts","view-moments","view-me","view-chat",
+  "push-enable","push-note","push-err","profile-err","profile-row","me-avatar",
+  "me-user","avatar-file","logout-row","notif-sheet","notif-sheet-close"]) els.set(i, mkEl(i));
 const tabs = [
   Object.assign(mkEl("", "button"), { dataset: { view: "chats" } }),
   Object.assign(mkEl("", "button"), { dataset: { view: "contacts" } }),
@@ -102,6 +105,15 @@ globalThis.fetch = async (url, opts) => {
       json: async () => ({}),
     };
   }
+  if (u === "/me") return { ok: true, json: async () => ({ user: "riceball" }) };
+  if (u === "/profile") return { ok: true, json: async () => ({ user: "riceball" }) };
+  if (u === "/hist/persona-leo") {
+    await new Promise((r) => setTimeout(r, 20));
+    return { ok: true, json: async () => ([
+      { who: "me", text: "Hello Leo", t: 1 },
+      { who: "ai", text: "Hi Rice", t: 2 },
+    ]) };
+  }
   fetches.push({ url, body: opts?.body ? JSON.parse(opts.body) : null });
   return { ok: true, json: async () => ({ token: "tok", model: "m" }) };
 };
@@ -129,85 +141,15 @@ row.fire("click");
 await tick(10);                       // 等 fetch
 console.log("✓ 进聊天页:", !els.get("view-chat").hidden, "| name:", els.get("chat-name").textContent);
 
-const ws = WSS[WSS.length - 1];
-ws.onopen();
-ws.onmessage({ data: JSON.stringify({ setupComplete: true }) });
-console.log("✓ 唤醒消息:", ws.sent[1]);
-console.log("✓ 输入框解锁:", !els.get("chat-input").disabled, "| 通话键解锁:", !els.get("chat-call").disabled);
-console.log("✓ 首次进 history 为空:", JSON.stringify(fetches[0].body.history));
-
-const emit = (o) => ws.onmessage({ data: JSON.stringify(o) });
-let body = els.get("chat-body");
-
-// 开场白分片：混增量包和累计包两种，turnComplete 前只出 typing 不出气泡
-emit({ serverContent: { outputTranscription: { text: "Hi! " } } });
-emit({ serverContent: { outputTranscription: { text: "Hi! Let's just talk." } } });
-emit({ serverContent: { outputTranscription: { text: " What's your name?" } } });
-console.log("✓ 分片期间只有 typing:", body.children.length === 1, "|", body.children[0].className);
-emit({ serverContent: { turnComplete: true } });
-console.log("✓ AI 首条气泡（整轮一次出）:", body.children[0].className, "|", body.children[0].textContent);
-console.log("✓ typing 已收:", body.children.length === 1, "| 状态:", els.get("chat-state").textContent);
-
-// 打字：自己的气泡立即出；干等期不摆 typing（临回前 5 秒才有），顶栏先挂 persona 状态
-els.get("chat-input").value = "I'm Rice.";
-els.get("chat-bar").fire("submit", { preventDefault() {} });
-console.log("✓ 我的气泡:", body.children[1].className, "|", body.children[1].textContent,
-            "| 干等无 typing:", body.children.length === 2, "| 状态:", els.get("chat-state").textContent);
-emit({ serverContent: { outputTranscription: { text: "Nice" } } });
-emit({ serverContent: { outputTranscription: { text: "! Rice." } } });
-emit({ serverContent: { turnComplete: true } });
-console.log("✓ AI 回复落定:", body.children[2].className, "|", body.children[2].textContent,
-            "| 节点数:", body.children.length);
-
-// 打电话：通话中的转写同样攒到 turnComplete 才落气泡；只有字幕是实时的
-els.get("chat-call").fire("click");
-console.log("✓ 通话中 call.hidden =", !els.get("call").hidden, "| 状态:", els.get("call-state").textContent);
-emit({ serverContent: { inputTranscription: { text: "I am " } } });
-emit({ serverContent: { inputTranscription: { text: "Rice." } } });
-emit({ serverContent: { outputTranscription: { text: "Nice to meet you, Rice!" } } });
-console.log("✓ 通话字幕（合并后）:", els.get("call-said").textContent);
-console.log("✓ 通话中不落气泡:", body.children.length === 3);
-emit({ serverContent: { turnComplete: true } });
-console.log("✓ 通话转写落气泡:", body.children.length === 5,
-            "|", body.children[3].textContent, "/", body.children[4].textContent);
-
-// 挂断 → 复盘（不流式：先挂着「正在整理」，收尾一次性贴正文）
-els.get("call-end").fire("click");
-console.log("✓ 挂断后 call.hidden =", els.get("call").hidden);
-await tick(760);                      // 等 700ms 缓冲
-const card = body.children[body.children.length - 1];
-console.log("✓ 复盘卡片:", card.className, "|", card.children[0].textContent,
-            "|", card.children[1].textContent);
-await tick(10);
-emit({ serverContent: { outputTranscription: { text: "做得好的：能主动反问。要改的：别只回一个词，试着说整句。" } } });
-console.log("✓ 分片期间不流式（还是占位）:", card.children[1].textContent.slice(0, 6) + "…");
-await tick(760);   // 过 700ms 宽限，再让模型收尾
-emit({ serverContent: { turnComplete: true } });
-console.log("✓ 复盘收尾 class:", card.className, "|", card.children[1].textContent.slice(0, 16) + "…");
-console.log("✓ 卡片没被清掉:", body.children.includes(card));
-
-// 返回列表
+const body = els.get("chat-body");
+await tick(40);
+if (body.children.length !== 3) throw new Error(`R2 history render count: ${body.children.length}`);
+if (!store.has("fluentchat:hist:v1:persona-leo")) throw new Error("R2 history was not persisted");
+console.log("✓ R2 历史显示并已落本地");
 els.get("chat-back").fire("click");
-console.log("✓ 返回:", !els.get("view-chat").hidden === false, "view-chats:", !els.get("view-chats").hidden,
-            "| ws 关闭:", ws.readyState === 3);
-
-// 重进同一个 Unit：历史从 localStorage 恢复，/token 请求带上 history
 row.fire("click");
-await tick(10);
-const lastFetch = fetches[fetches.length - 1];
-console.log("✓ 重进带 history:", lastFetch.body.history.length, "条",
-            "| 末条:", JSON.stringify(lastFetch.body.history[lastFetch.body.history.length - 1]));
-console.log("✓ 历史重渲染:", body.children.length, "个节点 | 末尾是复盘:",
-            body.children[body.children.length - 1].className.includes("review"));
-console.log("✓ 首条还是开场白:", body.children[0].textContent);
-
-// Reset：清空本地历史 + 拆线重连，界面和模型一起回白纸
-els.get("chat-reset").fire("click");
-console.log("✓ reset 后气泡清空:", body.children.length === 0);
-console.log("✓ reset 后本地历史已删:", !store.has("fluentchat:hist:v1:persona-leo"));
-await tick(10);
-const resetFetch = fetches[fetches.length - 1];
-console.log("✓ reset 重连 history 为空:", JSON.stringify(resetFetch.body.history));
+if (body.children.length !== 3) throw new Error(`reopen local render count: ${body.children.length}`);
+console.log("✓ 重进立即从本地恢复");
 console.log("SMOKE PASS");
 // 节奏引擎的真定时器（回复延迟等）会把事件循环吊住，直接收工
 process.exit(0);

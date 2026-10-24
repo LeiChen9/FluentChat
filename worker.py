@@ -31,7 +31,7 @@ from backend.config import (AUTH_TOKENS_URL, HIST_MAX_CHARS, HIST_MAX_ITEMS,
 
 def to_messages(unit: str, history: list[dict]) -> list[dict]:
     """NPC 只使用 contacts 下的人设 prompt，历史转 user/assistant。"""
-    sys_text = read_prompt(unit)
+    sys_text = "This is an online chat only.\n\n" + read_prompt(unit)
     msgs = [{"role": "system", "content": sys_text}]
     if not history:
         msgs.append({"role": "user", "content": "(Wait for the user to start.)"})
