@@ -3,7 +3,7 @@
 // 音频双向：AI 声音在浏览器直接播（24kHz PCM16），麦克风分片上行（16kHz PCM16）。
 // Worker 全程只签 token，不碰音频。
 
-import { loadContacts } from "./personas.js?v=20261024-1";
+import { loadContacts } from "./personas.js?v=20261024-2";
 import { statusOf, nextReplyDelay, burstOf, noteReply } from "./rhythm.js?v=20261024-2";
 import { proactiveTick, engageBump, noteUserTalk } from "./proactive.js";
 
@@ -135,11 +135,18 @@ export function initChat({ show, back }) {
   };
 
   // ── 聊天列表：persona 好友，一行一个（read 自 contacts 数据目录） ──
-  const rowOf = new Map(); // persona.id -> { li, preview, time } 列表行，有新消息要置顶
-  // 有新消息（无论谁说的）就把这行的 li 挪到列表最上面，微信式
-  function bumpRow(id) {
+  const rowOf = new Map(); // persona.id -> { li, preview, time, at } 列表行，按最后消息时间排
+  // 有新消息（无论谁说的）就按时间重排，微信式最近消息在上
+  function sortRows() {
+    const list = document.getElementById("chat-list");
+    const rows = [...rowOf.values()].sort((a, b) => (b.at || 0) - (a.at || 0));
+    for (const row of rows) list.append(row.li);
+  }
+  function bumpRow(id, at = Date.now()) {
     const row = rowOf.get(id);
-    if (row) row.li.parentNode.prepend(row.li);
+    if (!row) return;
+    row.at = at;
+    sortRows();
   }
   let people = [];
   // 未读计数（内存）：后台落盘的消息条数，进对应对话清零。刷新即清空
@@ -187,11 +194,15 @@ export function initChat({ show, back }) {
         time: btn.querySelector(".row__time"),
         dot: btn.querySelector(".row__name .dot"),
         badge: btn.querySelector(".row__badge"),
+        at: 0,
       });
-      rowOf.get(p.id).preview.textContent = lastLine(p.id) || "";
+      const row = rowOf.get(p.id);
+      row.preview.textContent = lastLine(p.id) || "";
       const lastTalk = loadHist(p.id).filter((h) => h.who === "me" || h.who === "ai").at(-1);
-      rowOf.get(p.id).time.textContent = lastTalk && lastTalk.t ? fmtRowTime(lastTalk.t) : "";
+      row.at = lastTalk?.t || 0;
+      row.time.textContent = lastTalk?.t ? fmtRowTime(lastTalk.t) : "";
     }
+    sortRows();
     paintDots();
     startProactive(); // 名单到齐才开始调度
   });
@@ -597,7 +608,11 @@ export function initChat({ show, back }) {
         if (!loadHist(p.id).length && Array.isArray(arr) && arr.length) {
           try { localStorage.setItem(HIST_KEY + p.id, JSON.stringify(arr.slice(-HIST_MAX))); } catch {}
           const row = rowOf.get(p.id), last = arr.filter((h) => h.who === "me" || h.who === "ai").at(-1);
-          if (row && last) { row.preview.textContent = clip((last.who === "me" ? "You: " : "") + last.text); row.time.textContent = fmtRowTime(last.t || Date.now()); }
+          if (row && last) {
+            row.preview.textContent = clip((last.who === "me" ? "You: " : "") + last.text);
+            row.time.textContent = last.t ? fmtRowTime(last.t) : "";
+            bumpRow(p.id, last.t || 0);
+          }
         }
       }).catch(() => {});
     }));
@@ -613,7 +628,7 @@ export function initChat({ show, back }) {
     } catch {}
     mirrorHist(unit.id);
     // 落一条预览跟着动，回列表就能看到最新一条（像 WhatsApp/LINE）
-    bumpRow(unit.id); // 谁有新消息就置顶（微信式），自己发的也算
+    bumpRow(unit.id, item.t); // 谁有新消息就置顶（微信式），自己发的也算
     const row = rowOf.get(unit.id);
     if (row) {
       row.preview.textContent = clip((item.who === "me" ? "You: " : "") + item.text);
