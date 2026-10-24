@@ -292,7 +292,7 @@ export function initChat({ show, back }) {
 
   // 本轮攒下的话一次性落成气泡，并写进本地历史。
   // 长回复拆条：再「一次把话讲完」的人也不发一坨长文 —— 按句子分堆，
-  // 每堆 ≤ MAX_BUBBLE，第一段立落，后面的间隔 1.2-3 秒配 typing 逐段出。
+  // 每堆 ≤ MAX_BUBBLE，第一段立落，后面的间隔 = 1.2-3 秒 + 下一段打字时间。
   const MAX_BUBBLE = 160;
   function sliceReply(text, maxSentences) {
     const limit = Number.isFinite(maxSentences) ? maxSentences : Infinity;
@@ -352,7 +352,10 @@ export function initChat({ show, back }) {
         drip();
       };
       if (!i) sendPart();
-      else state.timer = setTimeout(sendPart, 1200 + Math.random() * 1800);
+      else {
+        const think = Math.min(Math.max(parts[i].length * THINK_MS, THINK_MIN), THINK_MAX);
+        state.timer = setTimeout(sendPart, 1200 + Math.random() * 1800 + think);
+      }
     };
     drip();
   }
