@@ -21,8 +21,15 @@ const WARM_AWAY = [45, 180];  // 走开多久（秒），回来再回
 const live = new Map();
 
 // 基调 = hours 表本位（表坏降级 active）。
+function isDayOff(p, date) {
+  const d = date.getDay();
+  if (d === 0 || d === 6) return true;
+  const stamp = date.toISOString().slice(0, 10);
+  return (p?.schedule?.holidays || []).includes(stamp);
+}
 function anchorOf(p, date) {
-  const h = p?.schedule?.hours;
+  const off = isDayOff(p, date);
+  const h = off ? (p?.schedule?.hoursWeekend || p?.schedule?.hours) : p?.schedule?.hours;
   const s = Array.isArray(h) && h.length === 24 ? h[date.getHours()] : "active";
   return STATUS.includes(s) ? s : "active";
 }

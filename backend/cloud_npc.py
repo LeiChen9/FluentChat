@@ -64,8 +64,14 @@ def pick_proactive(contact: dict, led: dict, eng: float, now: float, force: bool
     if not isinstance(s, dict) or not isinstance(led, dict):
         return False
     # 基调 offline 直接哑（浏览器有邻档漂移云侧不模拟，只看 hours 表）
-    hours = contact.get("hours") or []
-    if len(hours) == 24 and hours[time.gmtime(now + CST).tm_hour] == "offline":
+    import datetime as _dt
+    _cst = _dt.datetime.utcfromtimestamp(now + CST)
+    _day = _cst.weekday()  # 0=Mon..6=Sun
+    _is_off = _day >= 5
+    hours = contact.get("hoursWeekend" if _is_off else "hours") or contact.get("hours") or []
+    if len(hours) != 24:
+        hours = contact.get("hours") or []
+    if len(hours) == 24 and hours[_cst.hour] == "offline":
         return False
     if led.get("date") != day_stamp(now):
         led = {"date": day_stamp(now), "sent": 0}

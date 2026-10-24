@@ -5,18 +5,87 @@
   "preview": "The windowsill flowers finally opened. Super lovely :)",
   "time": "Yesterday",
   "avatar": "assets/contacts/chole/avatar.jpg",
-  "base": [0, 90],
+  "base": [
+    0,
+    90
+  ],
   "reply": "normal",
-  "burst": [0.15, 1],
+  "burst": [
+    0.15,
+    1
+  ],
   "glow": 20,
-  "activeChance": { "away": 0.5, "busy": 0.1 },
-  "proactive": { "perDay": [1, 2], "windows": [[13, 17], [20, 24]] },
+  "activeChance": {
+    "away": 0.5,
+    "busy": 0.1
+  },
+  "proactive": {
+    "perDay": [
+      1,
+      2
+    ],
+    "windows": [
+      [
+        13,
+        17
+      ],
+      [
+        20,
+        24
+      ]
+    ]
+  },
   "hours": [
-    "offline", "offline", "offline", "offline",
-    "offline", "offline", "active",  "active",
-    "active",  "away",    "away",    "away",
-    "busy",    "away",    "away",    "away",
-    "away",    "active",  "active",  "active",
-    "active",  "active",  "active", "active"
-  ]
+    "offline",
+    "offline",
+    "offline",
+    "offline",
+    "offline",
+    "offline",
+    "active",
+    "active",
+    "active",
+    "away",
+    "away",
+    "away",
+    "busy",
+    "away",
+    "away",
+    "away",
+    "away",
+    "active",
+    "active",
+    "active",
+    "active",
+    "active",
+    "active",
+    "active"
+  ],
+  "hoursWeekend": [
+    "offline",
+    "offline",
+    "offline",
+    "offline",
+    "offline",
+    "offline",
+    "offline",
+    "offline",
+    "away",
+    "active",
+    "active",
+    "active",
+    "away",
+    "active",
+    "active",
+    "active",
+    "active",
+    "active",
+    "active",
+    "active",
+    "active",
+    "away",
+    "offline",
+    "offline"
+  ],
+  "holidays": []
 }

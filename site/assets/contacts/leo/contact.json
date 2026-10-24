@@ -5,18 +5,83 @@
   "preview": "Yo!! Some guy just dumped a whole latte on my arm at the truck 🔥",
   "time": "09:12",
   "avatar": "assets/contacts/leo/avatar.png",
-  "base": [0, 60],
+  "base": [
+    0,
+    60
+  ],
   "reply": "spike",
-  "burst": [0.6, 2],
+  "burst": [
+    0.6,
+    2
+  ],
   "glow": 10,
-  "activeChance": { "away": 0.45, "busy": 0.03 },
-  "proactive": { "perDay": [1, 4], "windows": [[9, 24]] },
+  "activeChance": {
+    "away": 0.45,
+    "busy": 0.03
+  },
+  "proactive": {
+    "perDay": [
+      1,
+      4
+    ],
+    "windows": [
+      [
+        9,
+        24
+      ]
+    ]
+  },
   "hours": [
-    "active",  "offline", "offline", "offline",
-    "offline", "offline", "away",    "busy",
-    "busy",    "busy",    "away",    "away",
-    "away",    "away",    "away",    "away",
-    "away",    "away",    "active",  "active",
-    "active",  "active",  "active",  "active"
-  ]
+    "active",
+    "offline",
+    "offline",
+    "offline",
+    "offline",
+    "offline",
+    "away",
+    "busy",
+    "busy",
+    "busy",
+    "away",
+    "away",
+    "away",
+    "away",
+    "away",
+    "away",
+    "away",
+    "away",
+    "active",
+    "active",
+    "active",
+    "active",
+    "active",
+    "active"
+  ],
+  "hoursWeekend": [
+    "offline",
+    "offline",
+    "offline",
+    "offline",
+    "offline",
+    "offline",
+    "away",
+    "active",
+    "active",
+    "active",
+    "away",
+    "active",
+    "away",
+    "active",
+    "active",
+    "active",
+    "active",
+    "active",
+    "active",
+    "active",
+    "active",
+    "active",
+    "active",
+    "active"
+  ],
+  "holidays": []
 }
