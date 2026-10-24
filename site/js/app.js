@@ -1,6 +1,6 @@
-import { initChat, fmtRowTime } from "./live.js?v=20261024-4";
+import { initChat, fmtRowTime } from "./live.js?v=20261024-5";
 import { loadContacts } from "./personas.js?v=20261024-2";
-import { statusOf, setViewerKey } from "./rhythm.js?v=20261024-2";
+import { statusOf, setViewerKey } from "./rhythm.js?v=20261024-3";
 // 四个主 tab + 一个对话子页（对应 line/whatsapp 首层导航）。
 const VIEWS = ["chats", "contacts", "moments", "me", "chat"];
 

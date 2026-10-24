@@ -1,5 +1,5 @@
 {
-  "_hint": "画像+作息合一。name/status/preview/time/avatar 进 UI；base: 无 reply 兜底用的回复秒数区间；reply: 回复分布 spike=尖峰厚尾/normal=正态/skew=右偏；burst: [补话概率, 最多几轮]；glow: away 被回后升 active 的分钟数；activeChance: busy/away 漂回 active 的概率；proactive: 主动消息 {perDay:[lo,hi] 每天 1-2,engagement 0→lo、1→hi, windows:[[起,止],...] 小时段开窗}，不配=不主动发；hours: 下标=小时0-23 的基调",
+  "_hint": "画像+作息合一。name/status/preview/time/avatar 进 UI；base: 无 reply 兜底用的回复秒数区间；reply: 回复分布 spike/normal/skew，或加权区间 [[权重,lo,hi],...]；burst: [补话概率, 最多几轮]；glow: away 被回后升 active 的分钟数；activeChance: busy/away 漂回 active 的概率；proactive: 主动消息 {perDay:[lo,hi] 每天 1-2,engagement 0→lo、1→hi, windows:[[起,止],...] 小时段开窗}，不配=不主动发；hours: 下标=小时0-23 的基调",
   "name": "Sam",
   "status": "Mild Democrat / Hardcore Realist / Programmer / Cynic",
   "preview": "Got a mini task for you 🎣",
@@ -9,7 +9,7 @@
     0,
     240
   ],
-  "reply": "skew",
+  "reply": [[1, 6, 30]],
   "maxSentences": 4,
   "burst": [
     0.25,

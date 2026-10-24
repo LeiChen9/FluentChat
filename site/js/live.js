@@ -4,7 +4,7 @@
 // Worker 全程只签 token，不碰音频。
 
 import { loadContacts } from "./personas.js?v=20261024-2";
-import { statusOf, nextReplyDelay, burstOf, noteReply } from "./rhythm.js?v=20261024-2";
+import { statusOf, nextReplyDelay, burstOf, noteReply } from "./rhythm.js?v=20261024-3";
 import { proactiveTick, engageBump, noteUserTalk } from "./proactive.js";
 
 const WS_BASE =

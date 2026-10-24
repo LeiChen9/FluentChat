@@ -80,7 +80,16 @@ const SHAPE = {
 };
 
 function sampleReply(p) {
-  const fn = SHAPE[p?.schedule?.reply];
+  const reply = p?.schedule?.reply;
+  if (Array.isArray(reply) && reply.length) {
+    let r = Math.random();
+    for (const [weight, lo, hi] of reply) {
+      if ((r -= weight) < 0) return lo > 0 ? rollSec([lo, hi]) : Math.random() * hi;
+    }
+    const [, lo, hi] = reply[reply.length - 1];
+    return lo > 0 ? rollSec([lo, hi]) : Math.random() * hi;
+  }
+  const fn = SHAPE[reply];
   return fn ? fn() : rollSec(params(p).base);
 }
 
