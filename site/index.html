@@ -10,7 +10,7 @@
 <title>FluentChat</title>
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="assets/FluentChat.png">
-<link rel="stylesheet" href="css/app.css?v=20261024-1">
+<link rel="stylesheet" href="css/app.css?v=20261025-1">
 </head>
 <body>
 <div class="app">
@@ -25,13 +25,13 @@
       <ul class="row-list" id="chat-list"></ul>
     </section>
 
-    <!-- ── 联系人：persona 名册 ── -->
-    <section class="view" id="view-contacts" hidden>
+    <!-- ── 通话记录：每次通话一条，点进去看转写和点评 ── -->
+    <section class="view" id="view-calls" hidden>
       <header class="page-head">
-        <h1 class="page-title">Contacts</h1>
-        <p class="page-sub">Your AI friends — tap one to talk</p>
+        <h1 class="page-title">Voice Calls</h1>
+        <p class="page-sub">Call transcripts, line by line</p>
       </header>
-      <ul class="row-list" id="contact-list"></ul>
+      <ul class="row-list" id="call-list"></ul>
     </section>
 
     <!-- ── 朋友圈：好友们的动态信息流（本期静态占位） ── -->
@@ -97,6 +97,27 @@
           </svg>
         </button>
       </div>
+    </section>
+
+    <!-- ── 通话详情：转写 + 逐句点评 + 总评 ── -->
+    <section class="view view--chat" id="view-call" hidden>
+      <header class="chat-head">
+        <button class="chat-back" id="call-back" type="button" aria-label="Back to calls">
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M15 4.5 7.5 12 15 19.5" stroke="currentColor" stroke-width="2.2"
+                  stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+
+        <span class="avatar chat-av" id="call-detail-av"><img src="assets/npc-cat.webp" alt=""></span>
+
+        <span class="chat-id">
+          <b id="call-detail-name">Call</b>
+          <i id="call-detail-meta"></i>
+        </span>
+      </header>
+
+      <div class="chat-body" id="call-detail-body"></div>
     </section>
 
     <!-- ── Me：设置与通知 ── -->
@@ -186,12 +207,11 @@
       <span>Chats</span>
     </button>
 
-    <button class="tab" role="tab" data-view="contacts" aria-controls="view-contacts">
+    <button class="tab" role="tab" data-view="calls" aria-controls="view-calls">
       <svg viewBox="0 0 28 28" fill="none" aria-hidden="true">
-        <circle cx="14" cy="10" r="4.6" stroke="currentColor" stroke-width="2"/>
-        <path d="M5.5 23.5c.8-4 4.3-6.3 8.5-6.3s7.7 2.3 8.5 6.3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        <path d="M7.8 4.6c.7-.7 1.9-.7 2.6 0l2.3 2.3c.7.7.7 1.9 0 2.6l-1.4 1.4a12.4 12.4 0 0 0 4.6 4.6l1.4-1.4c.7-.7 1.9-.7 2.6 0l2.3 2.3c.7.7.7 1.9 0 2.6l-1.5 1.5c-.9.9-2.3 1.3-3.6.8-5-1.9-8.9-5.8-10.8-10.8-.5-1.3-.1-2.7.8-3.6l1.7-1.7Z" fill="currentColor"/>
       </svg>
-      <span>Contacts</span>
+      <span>Calls</span>
     </button>
 
     <button class="tab" role="tab" data-view="moments" aria-controls="view-moments">
@@ -213,6 +233,6 @@
   </nav>
 
 </div>
-<script type="module" src="js/app.js?v=20261024-7"></script>
+<script type="module" src="js/app.js?v=20261025-1"></script>
 </body>
 </html>

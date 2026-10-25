@@ -4,6 +4,7 @@
 // Worker 全程只签 token，不碰音频。
 
 import { loadContacts } from "./personas.js?v=20261024-2";
+import { saveCall, fmtDur } from "./calls.js?v=20261025-1";
 import { statusOf, nextReplyDelay, burstOf, noteReply } from "./rhythm.js?v=20261024-3";
 import { proactiveTick, engageBump, noteUserTalk } from "./proactive.js";
 
@@ -30,21 +31,8 @@ export function fmtRowTime(ts) {
   return `${MONTHS[d.getMonth()]} ${n}${suf}`;
 }
 
-// 挂断后发给 AI 的复盘指令。
-// base.md 里复盘是「对话式点评、说完等用户反应」，这条是追在后面的用户输入，
-// 把它掰成一次性交稿的中文文字：不分轮、不提问、直接给正文。
-const REVIEW_REQ = [
-  "通话结束了，现在把这次对话的复盘建议一次性给我。",
-  "请直接用中文写成一整段交给我：不要分几轮，不要问我问题，也不要等我回应。",
-  "这样组织：先用一两句话说清楚我这次做得好的一两个具体的地方；",
-  "然后给 2-3 个我需要改的点，每个点一句中文说明，后面配一个我应该怎么说的简短英文例句；",
-  "再说一句中文鼓励；",
-  "最后附一份「表达清单」：把这次我说过的每一句（含语音转写）逐条整理，",
-  "每条写「我说 X → 地道说法 Y」，中文点一下意思、英文给整句；已经地道的写这句已经很地道，",
-  "没转写到的明说哪句没听清，不硬凑；只整理我说的话，不要贴你自己的话。",
-  "现在就开始正文，不要寒暄，不要说「我们来复盘」这类开场，",
-  "也不要做评分或语法长讲解。",
-].join("");
+// 挂断后由 calls.js 走 /call-review 生成点评，这里不再沿用 Live 连接。
+
 
 // 转写分片的处理方式（实测修正）：
 // 服务端给的不一定是「整轮完整文本」，旧代码按整轮覆盖写，
@@ -60,7 +48,7 @@ const HIST_MAX = 120;    // 本地每个 Unit 最多留多少条
 const HIST_FOR_AI = 30;  // 交给模型最多多少条（每条再截 HIST_CHARS 字）
 const HIST_CHARS = 400;
 
-export function initChat({ show, back }) {
+export function initChat({ show, back, openCall }) {
   // ── DOM ──
   const nameEl = document.getElementById("chat-name");
   const stateEl = document.getElementById("chat-state");
@@ -117,13 +105,8 @@ export function initChat({ show, back }) {
   let statusTimer = 0;   // 状态栏 / 苏醒检查的轮询
   let lastAiAt = 0;      // AI 上一轮回话落地的时刻；之后不久的追问 = 话题正热
 
-  // 挂断后的复盘
-  let reviewCard = null;
-  let reviewText = null;
-  let reviewBuf = "";
-  let reviewArmedAt = 0;
-  let reviewIdle = null;
-  let reviewCap = null;
+  // 通话记录：接通后全程攒这里，挂断时落本机账本 + 一条时长系统行。
+  let callRec = null;
 
   // 列表预览跟最近一条消息走（不论谁说的，像 LINE），自己的话加 "You: " 前缀
   const clip = (text) => (text.length > 48 ? text.slice(0, 48) + "…" : text);
@@ -131,7 +114,7 @@ export function initChat({ show, back }) {
   const JUNK = /(?:<no\s*speech>|<silence>|<pause>|\{\s*pause\s*\}|\{\s*beat\s*\}|\{\s*hesitate\s*\}|\{\s*long\s*pause\s*\})/gi;
   const clean = (text) => String(text).replace(JUNK, " ").replace(/\s+/g, " ").trim();
   const lastLine = (id) => {
-    const talk = loadHist(id).filter((h) => h.who === "me" || h.who === "ai");
+    const talk = loadHist(id).filter((h) => !h.hidden && (h.who === "me" || h.who === "ai"));
     const last = talk[talk.length - 1];
     return last ? clip((last.who === "me" ? "You: " : "") + last.text) : null;
   };
@@ -317,13 +300,31 @@ export function initChat({ show, back }) {
     if (pendingMe) {
       const text = clean(pendingMe);
       pendingMe = "";
-      if (text) { addBubble("me", text); pushHist({ who: "me", text, t: Date.now() }); }
+      if (text) {
+        const t = Date.now();
+        if (callRec) {
+          // 通话转写：进通话记录 + 隐藏进历史（模型记得，Chat 页不显示）
+          callRec.turns.push({ who: "me", text, t });
+          pushHist({ who: "me", text, t, hidden: true });
+        } else {
+          addBubble("me", text);
+          pushHist({ who: "me", text, t });
+        }
+      }
     }
     if (pendingAi) {
-      const parts = sliceReply(pendingAi, unit?.maxSentences).map((t) => clean(t)).filter((t) => t);
+      const text = clean(pendingAi);
       pendingAi = "";
-      if (!parts.length) return;
+      if (!text) return;
       lastAiAt = Date.now(); // 回话落地 = 参照点：紧随的追问按「话题正热」处理
+      if (callRec) {
+        const t = Date.now();
+        callRec.turns.push({ who: "ai", text, t });
+        pushHist({ who: "ai", text, t, hidden: true });
+        return;
+      }
+      const parts = sliceReply(text, unit?.maxSentences).filter((t) => t);
+      if (!parts.length) return;
       if (parts.length === 1) { addBubble("ai", parts[0]); pushHist({ who: "ai", text: parts[0], t: Date.now() }); return; }
       deliverParts(parts);
     }
@@ -435,7 +436,7 @@ export function initChat({ show, back }) {
       return;
     }
     noteReply(u, new Date()); // 张嘴回话 = 短暂真在线，升 active 锁 glow 分钟
-    if (unit === u && mode === "text" && !reviewCard) {
+    if (unit === u && mode === "text") {
       showTyping();
       const ms = Math.min(Math.max(st.text.length * THINK_MS, THINK_MIN), THINK_MAX);
       st.wait = setTimeout(() => { st.wait = 0; deliverReply(u, st); }, ms);
@@ -449,7 +450,7 @@ export function initChat({ show, back }) {
     const text = clean(st.text);
     replies.delete(u.id);
     if (!text) return;
-    if (unit !== u || mode !== "text" || reviewCard) { deliverProactive(u, text); return; }
+    if (unit !== u || mode !== "text") { deliverProactive(u, text); return; }
     lastAiAt = Date.now(); // 回话落地 = 话题正热的参照点
     if (st.req !== BURST_REQ) burstArmed += burstOf(u).extra; // 补话的回话别给自己续弹药
     const parts = sliceReply(text, u.maxSentences).filter(Boolean);
@@ -582,7 +583,7 @@ export function initChat({ show, back }) {
 
   // 落地：开着本对话就在页里出气泡进记忆；没开着只落盘 + 刷列表预览。
   function deliverProactive(p, text) {
-    if (unit === p && mode === "text" && !reviewCard) {
+    if (unit === p && mode === "text") {
       noteReply(p, new Date()); // 正式开口，再锁一次 glow
       const parts = sliceReply(text);
       for (const t of parts) { addBubble("ai", t); pushHist({ who: "ai", text: t, t: Date.now() }); }
@@ -613,7 +614,7 @@ export function initChat({ show, back }) {
       if (!Array.isArray(arr)) return [];
       // 旧缓存里存过占位符和整行空白，读进来顺手清一遍（预览/渲染/给模型的记忆都干净）
       return arr
-        .filter((h) => h && typeof h.text === "string")
+        .filter((h) => h && (typeof h.text === "string" || h.kind === "call"))
         .map((h) => (h.who ? { ...h, text: clean(h.text) } : h))
         .filter((h) => h.who ? h.text : true);
     } catch {
@@ -637,7 +638,7 @@ export function initChat({ show, back }) {
       fetch(`/hist/${p.id}`).then((r) => r.ok ? r.json() : null).then((arr) => {
         if (!loadHist(p.id).length && Array.isArray(arr) && arr.length) {
           try { localStorage.setItem(HIST_KEY + p.id, JSON.stringify(arr.slice(-HIST_MAX))); } catch {}
-          const row = rowOf.get(p.id), last = arr.filter((h) => h.who === "me" || h.who === "ai").at(-1);
+          const row = rowOf.get(p.id), last = arr.filter((h) => !h.hidden && (h.who === "me" || h.who === "ai")).at(-1);
           if (row && last) {
             row.preview.textContent = clip((last.who === "me" ? "You: " : "") + last.text);
             row.time.textContent = last.t ? fmtRowTime(last.t) : "";
@@ -650,17 +651,19 @@ export function initChat({ show, back }) {
 
   function pushHist(item) {
     if (!unit) return;
-    item.t = Date.now();
+    if (!item.t) item.t = Date.now();
     hist.push(item);
     const KEEP = hist.slice(-HIST_MAX);
     try {
       localStorage.setItem(HIST_KEY + unit.id, JSON.stringify(KEEP));
     } catch {}
     mirrorHist(unit.id);
+    // 隐藏条目（通话转写）只进存储和模型记忆，不动列表预览
+    if (item.hidden) return;
     // 落一条预览跟着动，回列表就能看到最新一条（像 WhatsApp/LINE）
     bumpRow(unit.id, item.t); // 谁有新消息就置顶（微信式），自己发的也算
     const row = rowOf.get(unit.id);
-    if (row) {
+    if (row && item.who) {
       row.preview.textContent = clip((item.who === "me" ? "You: " : "") + item.text);
       row.time.textContent = fmtRowTime(item.t);
     }
@@ -896,7 +899,9 @@ export function initChat({ show, back }) {
     // sort 稳定，旧数据没 t 的按原位排在最前）。
     hist = loadHist(u.id);
     for (const item of hist) {
-      if (item.kind === "review") addReviewCard(item.text, false);
+      if (item.hidden) continue; // 通话转写：模型记忆，不画
+      if (item.kind === "review") addReviewCard(item.text);
+      else if (item.kind === "call") addCallLine(item);
       else addBubble(item.who === "me" ? "me" : "ai", item.text, item.t ?? null);
     }
     show?.();
@@ -905,7 +910,7 @@ export function initChat({ show, back }) {
       // 云端镜像拉取：本地历史干净ピ仕事 devs 正常，但 iOS 主屏 app 冷启动
       // 首猜偶发挂（登录都成功了家的 fetch 也会 Load failed）——空档时再补
       // 一枪。镜像里多的写回本地，主人反正史不丢。
-      const key = (i) => `${i.kind || "b"}|${i.who}|${i.text}|${i.t ?? ""}`;
+      const key = (i) => `${i.kind || "b"}|${i.id || ""}|${i.who}|${i.text}|${i.t ?? ""}`;
       let arr = null;
       const pullMirror = async () => {
         try {
@@ -925,12 +930,14 @@ export function initChat({ show, back }) {
       if (!arr && !hist.length) setChatState("History is reconnecting…");
       if (arr && arr.length) {
         const seen = new Set(hist.map(key));
-        const extra = arr.filter((c) => c && c.who && !seen.has(key(c)));
+        const extra = arr.filter((c) => c && (c.who || c.kind === "call") && !seen.has(key(c)));
         if (extra.length) {
           hist = [...hist, ...extra].sort((a, b) => (a.t ?? 0) - (b.t ?? 0)).slice(-HIST_MAX);
           try { localStorage.setItem(HIST_KEY + u.id, JSON.stringify(hist)); } catch {}
           for (const item of extra) {
-            if (item.kind === "review") addReviewCard(item.text, false);
+            if (item.hidden) continue;
+            if (item.kind === "review") addReviewCard(item.text);
+            else if (item.kind === "call") addCallLine(item);
             else addBubble(item.who === "me" ? "me" : "ai", item.text, item.t ?? null);
           }
           scrollDown(true);
@@ -940,14 +947,14 @@ export function initChat({ show, back }) {
     if (!statusTimer) statusTimer = setInterval(showStatus, 30000);
   }
 
-  // 离开对话页就整个拆掉：连接、麦克风、正在写的气泡、没跑完的复盘，全部清干净。
+  // 离开对话页就整个拆掉：连接、麦克风、正在写的气泡，全部清干净。
   // 历史另存在 localStorage 里，不跟着这里走 —— 下次打开同一 Unit 会重新渲染，
   // 而且签 token 时会带上，模型那边也有记忆。
   function teardown() {
     openSeq++;
     connectSeq++; // 让还在等 token 的 connect 作废
-    if (reviewIdle) { clearTimeout(reviewIdle); reviewIdle = null; }
-    if (reviewCap) { clearTimeout(reviewCap); reviewCap = null; }
+    // 通话中直接离开：先把没落盘的一轮收进记录，再整页拆掉
+    if (callRec) { flushPending(); finalizeCall(); }
     // 在途的回复不拆（replies 挂在 persona 上）：延迟/生成/typing 照常走完，
     // 人不在就交 deliverProactive 后台落盘 + 刷列表预览。
     if (statusTimer) { clearInterval(statusTimer); statusTimer = 0; }
@@ -965,9 +972,6 @@ export function initChat({ show, back }) {
     pendingMe = "";
     hideTyping();
     hist = [];
-    reviewCard = null;
-    reviewText = null;
-    reviewBuf = "";
     lastStamp = null; // 新会话的时间线重新起算
 
     callBox.hidden = true;
@@ -990,7 +994,10 @@ export function initChat({ show, back }) {
     mode = "text";
     callBox.hidden = true;
     callSaid.textContent = "";
+    flushPending();
+    finalizeCall(); // 已接通的照常记账；没接通（connected=false）直接丢
     setChatState(msg);
+    if (ws) { try { ws.close(); } catch {} }
   }
 
   async function connect() {
@@ -1056,7 +1063,7 @@ export function initChat({ show, back }) {
     sock.onclose = () => { if (ws === sock) onClose(u); };
   }
 
-  // 线死了只影响通话那件事：文本聊天不靠线照常，复盘在飞就先收尾
+  // 线死了只影响通话那件事：文本聊天不靠线照常，通话记录先收尾
   function onClose(u) {
     if (unit !== u) return;
     stopMic();
@@ -1068,7 +1075,7 @@ export function initChat({ show, back }) {
     mode = "text";
     callBox.hidden = true;
     callSaid.textContent = "";
-    if (reviewCard) { finishReview(); return; }
+    if (wasCall) finalizeCall();
     showStatus(); // 顶栏回到作息状态
     if (wasCall) setChatState("Call dropped");
     // 通话期间挂着的文本回复立刻续上：挂断回文本模式照常回话
@@ -1095,6 +1102,7 @@ export function initChat({ show, back }) {
     // 时显示通道级文案，别顶成 On call 让人以为已在通话
     if (d.setupComplete) {
       setReady(true);
+      if (callRec) callRec.connected = true;
       if (mode === "call") {
         setCallState("Connected — waiting…");
         // 接通了先「喂」一声：模型等人开口才说话，没有这条唤醒输入
@@ -1118,23 +1126,17 @@ export function initChat({ show, back }) {
 
     const line = sc.outputTranscription?.text;
     if (line) {
-      if (reviewCard) {
-        // 复盘这一轮：攒在卡片里，不流式写、不走普通气泡
-        reviewBuf = mergeChunk(reviewBuf, line);
-        armReviewIdle(3500);
+      pendingAi = mergeChunk(pendingAi, line);
+      if (mode === "call") {
+        callSaid.textContent = pendingAi; // 通话页保留实时字幕（跟着语音走）
       } else {
-        pendingAi = mergeChunk(pendingAi, line);
-        if (mode === "call") {
-          callSaid.textContent = pendingAi; // 通话页保留实时字幕（跟着语音走）
-        } else {
-          showTyping();
-        }
+        showTyping();
       }
     }
 
     // 只有通话才放声音。打字聊天时音频直接丢掉——纯文字聊天根本不用碰
     // AudioContext，也就没有「自动播放受限」这回事。
-    if (mode === "call" && !reviewCard) {
+    if (mode === "call") {
       const turnParts = sc.modelTurn?.parts;
       if (turnParts && Array.isArray(turnParts)) {
         for (const p of turnParts) {
@@ -1146,12 +1148,6 @@ export function initChat({ show, back }) {
     if (sc.turnComplete) {
       // 本轮攒的话（包括挂断后迟到的尾巴）一次性落成气泡
       flushPending();
-      if (reviewCard) {
-        // 挂断瞬间上一轮可能还有一条 turnComplete 迟到，别让它把
-        // 刚起头的复盘掐了：等 700ms，而且至少要攒到字。
-        if (reviewBuf.trim() && Date.now() - reviewArmedAt > 700) finishReview();
-        return;
-      }
       showStatus();
       examBurst();
       // turn 收尾不冒充接通：On call 由 AI 真出声那一刻 top 带上
@@ -1195,6 +1191,15 @@ export function initChat({ show, back }) {
     ensureAudio(); // 必须在用户手势里同步调，手机才肯出声、才肯开麦克风
     startRingback(); // 彩铃跟着手势走：不等握手、AI 开口前一直响
     mode = "call";
+    callRec = {
+      id: `c_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      unit: unit.id,
+      name: unit.name,
+      avatar: unit.avatar,
+      start: Date.now(),
+      connected: false,
+      turns: [],
+    };
     callBox.hidden = false;
     callSaid.textContent = "";
     setCallState("Connecting…"); // 拨号即握手：setupComplete 之后才 On call
@@ -1202,70 +1207,50 @@ export function initChat({ show, back }) {
     connect();
   }
 
-  // 挂断：声音全停，然后把复盘当文字要回来。
+  // 挂断：先把没落盘的一轮收进记录，再停声音、落账本、关线。
   function hangUp() {
+    flushPending(); // 通话里说到一半的先落下来，别丢
     stopMic();
     stopPlayback();
     stopRingback();
     callBox.hidden = true;
     callSaid.textContent = "";
     mode = "text";
-    flushPending(); // 通话里说到一半的先落下来，别丢
-    if (!ws) { showStatus(); return; } // 还没握上就挂了，没有复盘可要
+    finalizeCall();
     showStatus();
-    // 缓 700ms：挂断瞬间可能还有一轮在飞，别把它的尾巴当成复盘内容
-    setTimeout(() => {
-      if (ws && unit.reviewAfterCall && mode === "text" && !reviewCard) requestReview();
-    }, 700);
+    // 点评不再占用通话线：记录已落本机，calls.js 会用 /call-review 单独生成
+    if (ws) { try { ws.close(); } catch {} }
   }
 
-  // 复盘走的是同一条 Live 连接——模型手里本来就有整段对话，
-  // 不用另开接口，也不用把 transcript 传回去。
-  function requestReview() {
-    flushPending(); // 挂断后迟到的对话先落卡，再摆复盘卡片（保持先后顺序）
-    const { card, textEl } = addReviewCard("Summarizing our chat…", true);
-
-    reviewCard = card;
-    reviewText = textEl;
-    reviewBuf = "";
-    reviewArmedAt = Date.now();
-
-    send({ realtimeInput: { text: REVIEW_REQ } });
-    armReviewIdle(3500);
-    reviewCap = setTimeout(finishReview, 30000);
+  // 收尾一条通话：落本机账本（calls.js 会异步要点评），Chat 里只留一条时长系统行。
+  // 没接通（setupComplete 没到）的通话不记账。
+  function finalizeCall() {
+    const rec = callRec;
+    callRec = null;
+    if (!rec || !rec.connected) return;
+    rec.dur = Math.max(0, Date.now() - rec.start);
+    const id = saveCall(rec);
+    const item = { kind: "call", id, dur: rec.dur, t: rec.start };
+    if (unit && unit.id === rec.unit && mode === "text") addCallLine(item);
+    pushHist(item);
   }
 
-  // 转写是一段段来的，3.5 秒没新字就认为这轮完了。
-  function armReviewIdle(delay) {
-    if (reviewIdle) clearTimeout(reviewIdle);
-    reviewIdle = setTimeout(() => {
-      if (reviewBuf.trim()) { finishReview(); return; }
-      if (Date.now() - reviewArmedAt > 9000) { finishReview(); return; }
-      armReviewIdle(3500); // 还一个字都没来，再等等（reviewCap 兜底）
-    }, delay);
-  }
-
-  function finishReview() {
-    if (!reviewCard) return;
-    if (reviewIdle) { clearTimeout(reviewIdle); reviewIdle = null; }
-    if (reviewCap) { clearTimeout(reviewCap); reviewCap = null; }
-    reviewCard.classList.remove("is-loading");
-    const text = reviewBuf.trim();
-    reviewText.textContent = text || "No review this time — hang up once and try again.";
-    if (text) pushHist({ kind: "review", text });
-    reviewCard = null;
-    reviewText = null;
-    reviewBuf = "";
-    hideTyping();
+  // Chat 里的通话记录行：居中一条「Voice call · 3:21」，点开看转写给点评。
+  function addCallLine(item) {
+    const node = document.createElement("button");
+    node.type = "button";
+    node.className = "msg msg--call";
+    node.textContent = `Voice call · ${fmtDur(item.dur)}`;
+    node.addEventListener("click", () => openCall?.(item.id));
+    body.append(node);
     scrollDown(true);
-    // 复盘收完，通话线的使命结束：文本聊天不依赖线
-    if (mode === "text" && ws) { try { ws.close(); } catch {} }
+    return node;
   }
 
-  // 复盘卡片：loading 态挂「正在整理…」，收尾时一次性贴正文（不流式）。
-  function addReviewCard(text, loading) {
+  // 旧版复盘卡片：只保留渲染（老历史里还有），不再有新生成。
+  function addReviewCard(text) {
     const card = document.createElement("div");
-    card.className = loading ? "review is-loading" : "review";
+    card.className = "review";
     const label = document.createElement("p");
     label.className = "review__label";
     label.textContent = "Review notes";
@@ -1275,7 +1260,7 @@ export function initChat({ show, back }) {
     card.append(label, t);
     body.append(card);
     scrollDown(true);
-    return { card, textEl: t };
+    return card;
   }
 
   // Reset：清掉这个 Unit 的本地历史并拆线重连 —— 界面和模型一起回到白纸。
@@ -1321,8 +1306,15 @@ export function initChat({ show, back }) {
     sendBtn.disabled = true;
     cancelReply(unit);
     cancelDelivery();
-    addBubble("me", text);
-    pushHist({ who: "me", text, t: Date.now() });
+    const t = Date.now();
+    if (callRec) {
+      // 通话里打的字也算这次通话的转写：进记录 + 隐藏历史，不在 Chat 里冒气泡
+      callRec.turns.push({ who: "me", text, t });
+      pushHist({ who: "me", text, t, hidden: true });
+    } else {
+      addBubble("me", text);
+      pushHist({ who: "me", text, t });
+    }
     // 交互反馈进调度：用户开口 = 有人理，engagement 回弹；晾着的那次结清
     engageBump(unit.id, Date.now() - lastAiAt < WARM_WINDOW ? 0.3 : 0.2);
     noteUserTalk(unit.id);

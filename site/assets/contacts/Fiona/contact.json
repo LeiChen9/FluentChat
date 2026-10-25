@@ -10,7 +10,6 @@
   "burst": [0, 0],
   "glow": 1440,
   "activeChance": {"away": 1, "busy": 1},
-  "reviewAfterCall": true,
   "hours": [
     "active", "active", "active", "active", "active", "active",
     "active", "active", "active", "active", "active", "active",

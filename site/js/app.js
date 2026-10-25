@@ -1,15 +1,12 @@
-import { initChat, fmtRowTime } from "./live.js?v=20261024-7";
+import { initChat, fmtRowTime } from "./live.js?v=20261025-1";
 import { loadContacts } from "./personas.js?v=20261024-2";
-import { statusOf, setViewerKey } from "./rhythm.js?v=20261024-3";
-// 四个主 tab + 一个对话子页（对应 line/whatsapp 首层导航）。
-const VIEWS = ["chats", "contacts", "moments", "me", "chat"];
+import { setViewerKey } from "./rhythm.js?v=20261024-3";
+import { initCalls } from "./calls.js?v=20261025-1";
+// 四个主 tab + 两个子页（聊天 / 通话详情）。
+const VIEWS = ["chats", "calls", "moments", "me", "chat", "call"];
 
-// Contacts 状态副标题跟 rhythm 的档位走：点颜色和文案一一对应
-const STATUS_LABEL = { active: "Active", away: "Away", busy: "Busy", offline: "Offline" };
-let paintStatus = null;
-
-// 对话页是聊天列表的子页面，push 进去后底部仍然亮着聊天。
-const TAB_OF = { chat: "chats" };
+// 子页 push 进去后底部仍然亮着所属的 tab。
+const TAB_OF = { chat: "chats", call: "calls" };
 
 const tabs = [...document.querySelectorAll(".tab")];
 const tabbar = document.querySelector(".tabbar");
@@ -29,26 +26,33 @@ function showView(name) {
     view.hidden = !on;
     view.classList.toggle("is-active", on);
   }
-  // 对话页全屏：底部栏也收起来，不然输入框下面还垫一层 safe-area，
+  // 对话/通话详情页全屏：底部栏也收起来，不然输入框下面还垫一层 safe-area，
   // iPhone 上会多出一条空白。
-  tabbar.hidden = name === "chat";
+  tabbar.hidden = name === "chat" || name === "call";
 
   const tabFor = TAB_OF[name] ?? name;
   for (const tab of tabs) {
     const on = tab.dataset.view === tabFor;
     tab.setAttribute("aria-selected", String(on));
   }
-  // 每次进 Contacts 重算状态点（rhythm 的状态每 2 分钟漂移，不能只画一次）
-  if (name === "contacts") paintStatus?.();
+  // 每次进 Calls 重画列表（点评可能刚在后台生成完）
+  if (name === "calls") calls.refresh();
 }
+
+const calls = initCalls({
+  show: () => showView("call"),
+  back: () => showView("calls"),
+});
 
 const chat = initChat({
   show: () => showView("chat"),
   back: () => showView("chats"),
+  // Chat 里的通话记录行 → 跳到 Calls 的对应详情
+  openCall: (id) => calls.open(id),
 });
 leaveChat = () => chat.close();
 
-// ── 联系人页 + 朋友圈：read 自 contacts 数据目录，代码只做渲染 ──
+// ── 朋友圈：read 自 contacts 数据目录，代码只做渲染 ──
 let findPersona = null;
 
 // ── 认证：/me 查 cookie 会话；没登录先在覆盖层上完成登录/注册，再接着装数据 ──
@@ -180,32 +184,6 @@ setupProfileUI();
 function loadPeople() {
   const build = (people) => {
     findPersona = (unit) => people.find((p) => p.id === unit) || null;
-    const contactList = document.getElementById("contact-list");
-    const statusBits = [];
-    contactList.replaceChildren(); // 重建时清掉缓存版再画网络版
-    for (const p of [...people].sort((a, b) => a.name.localeCompare(b.name))) {
-      const li = document.createElement("li");
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "row";
-      btn.innerHTML =
-        `<img class="row__av" src="${p.avatar}" alt="">` +
-        `<span class="row__text"><b>${p.name}</b><i class="row__status"><span class="dot"></span><span class="st-label"></span></i></span>`;
-      btn.addEventListener("click", () => chat.open(p));
-      li.append(btn);
-      contactList.append(li);
-      statusBits.push({ p, dot: btn.querySelector(".dot"), label: btn.querySelector(".st-label") });
-    }
-
-    // 状态随时段漂移（active/away/busy/offline → 绿/黄/红/灰），进 tab 时刷
-    paintStatus = () => {
-      for (const b of statusBits) {
-        const st = statusOf(b.p, new Date());
-        b.dot.className = `dot dot--${st}`;
-        b.label.textContent = STATUS_LABEL[st];
-      }
-    };
-    paintStatus();
 
     const momentList = document.getElementById("moment-list");
     momentList.replaceChildren();

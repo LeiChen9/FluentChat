@@ -141,6 +141,77 @@ def sanitize_history(raw) -> list[dict]:
     return out
 
 
+def clean_call_turns(raw) -> list[dict]:
+    """通话点评入参：只留双方的转写，条数与单条长度都掐死。"""
+    out: list[dict] = []
+    if not isinstance(raw, list):
+        return out
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        who, text = item.get("who"), item.get("text")
+        if who not in ("me", "ai") or not isinstance(text, str):
+            continue
+        text = text.strip()[:500]
+        if not text:
+            continue
+        out.append({"who": who, "text": text})
+        if len(out) >= 60:
+            break
+    return out
+
+
+def _review_json(text: str) -> dict:
+    """模型偶尔裹代码块/寒暄：截出最外层对象再解析。"""
+    t = (text or "").strip()
+    a, b = t.find("{"), t.rfind("}")
+    if a < 0 or b <= a:
+        raise ValueError("模型没给出 JSON")
+    # strict=False：允许字符串里出现裸换行/制表符（模型常这么写）
+    return json.loads(t[a:b + 1], strict=False)
+
+
+def clean_review(data) -> dict:
+    """点评结果兜底：字段类型、条数与长度都收一遍，前端拿到就能直接画。"""
+    if not isinstance(data, dict):
+        raise ValueError("点评不是对象")
+
+    def s(x, limit):
+        return str(x).strip()[:limit] if isinstance(x, (str, int, float)) else ""
+
+    def ls(x, limit=3, size=200):
+        if not isinstance(x, list):
+            return []
+        return [s(i, size) for i in x if s(i, size)][:limit]
+
+    lines = []
+    for it in data.get("lines") or []:
+        if not isinstance(it, dict):
+            continue
+        i, better, note = it.get("i"), s(it.get("better"), 300), s(it.get("note"), 200)
+        if isinstance(i, int) and better:
+            lines.append({"i": i, "better": better, "note": note})
+    return {
+        "overall": s(data.get("overall"), 500),
+        "good": ls(data.get("good")),
+        "improve": ls(data.get("improve")),
+        "focus": ls(data.get("focus")),
+        "lines": lines[:60],
+    }
+
+
+def call_review_messages(turns: list[dict]) -> list[dict]:
+    """system = 点评规则；user = 带编号的转写（i 就是 lines[].i 的锚点）。"""
+    lines = [
+        f"[{i}] {'用户' if t['who'] == 'me' else 'NPC'}：{t['text']}"
+        for i, t in enumerate(turns)
+    ]
+    return [
+        {"role": "system", "content": read_prompt("call_review")},
+        {"role": "user", "content": "# 通话转写\n" + "\n".join(lines)},
+    ]
+
+
 def build_system_instruction(
     unit: str, history: list[dict] | None = None,
     tz_offset: int = DEFAULT_TZ_OFFSET
@@ -338,6 +409,35 @@ class Default(WorkerEntrypoint):
                 print(f"chat failure unit={unit}: {e}")
                 return Response.json({"error": str(e)}, status=502)
             return Response.json(out)
+
+        # ── 通话点评：挂断后前端把整段转写发来，一次性返回逐句建议 + 总评 ──
+        if request.method == "POST" and path.endswith("/call-review"):
+            if not user:
+                return Response.json({"error": "请先登录"}, status=401)
+            try:
+                body = await request.json()
+            except Exception:
+                return Response.json({"error": "请求体不是合法 JSON"}, status=400)
+            unit = body.get("unit")
+            if unit not in PERSONAS:
+                return Response.json({"error": "unit 只收 persona"}, status=400)
+            turns = clean_call_turns(body.get("turns"))
+            if not any(t["who"] == "me" for t in turns):
+                return Response.json({"error": "没有可点评的用户发言"}, status=400)
+            print(f"call review unit={unit} turns={len(turns)}")
+            try:
+                out = await run_chain(call_review_messages(turns))
+            except RuntimeError as e:
+                print(f"call review failure unit={unit}: {e}")
+                return Response.json({"error": str(e)}, status=502)
+            raw = out.get("content", "")
+            try:
+                review = clean_review(_review_json(raw))
+            except ValueError as e:
+                # 解析失败按上游失败处理：前端拿到 502 就可以重试
+                print(f"call review parse failure unit={unit}: {e} raw={raw[:300]!r}")
+                return Response.json({"error": "点评结果解析失败"}, status=502)
+            return Response.json(review)
 
         # ── Web Push：公钥 / 订阅登记 ──
         if request.method == "GET" and path.endswith("/push/pubkey"):
