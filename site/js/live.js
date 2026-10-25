@@ -494,7 +494,10 @@ export function initChat({ show, back }) {
   const PRO_REQ =
     "(Proactive turn. Nobody spoke just now: text me first like a friend would. " +
     "Pick up whatever we talked about recently or something happening in your day " +
-    "right now. 1-2 short casual sentences. Not a meta-greeting, don't mention " +
+    "right now. Approach it from a different angle than your previous proactive " +
+    "texts: share a slice of your day, wonder what I'm up to, or revisit an old " +
+    "topic with something new. Let the time since we last talked shape how you " +
+    "open. 1-2 short casual sentences. Not a meta-greeting, don't mention " +
     "that you haven't heard from me.)";
   const PRO_RETRY_MS = 90000; // 生成失败缓 1.5 分钟再试，一次为限
   const BURST_REQ =
@@ -917,7 +920,7 @@ export function initChat({ show, back }) {
         if (seq !== openSeq) return;
         arr = await pullMirror();
         if (seq !== openSeq) return;
-        if (arr !== null || hist.length) break;
+        if (arr !== null) break;
       }
       if (!arr && !hist.length) setChatState("History is reconnecting…");
       if (arr && arr.length) {

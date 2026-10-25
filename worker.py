@@ -61,7 +61,10 @@ def read_prompt(name: str) -> str:
 PRO_REQ = (
     "(Proactive turn. Nobody spoke just now: text me first like a friend would. "
     "Pick up whatever we talked about recently or something happening in your day "
-    "right now. 1-2 short casual sentences. Not a meta-greeting, don't mention "
+    "right now. Approach it from a different angle than your previous proactive "
+    "texts: share a slice of your day, wonder what I'm up to, or revisit an old "
+    "topic with something new. Let the time since we last talked shape how you "
+    "open. 1-2 short casual sentences. Not a meta-greeting, don't mention "
     "that you haven't heard from me.)"
 )
 
