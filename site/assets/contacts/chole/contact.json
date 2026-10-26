@@ -10,7 +10,7 @@
     90
   ],
   "reply": "normal",
-  "maxSentences": 3,
+  "maxSentences": null,
   "burst": [
     0.15,
     1

@@ -22,7 +22,7 @@ from urllib.parse import urlsplit
 from workers import Response, WorkerEntrypoint, fetch as js_fetch
 from backend import auth
 from backend import cloud_npc
-from backend.common import (ENDPOINTS, _load_subs, _save_subs,
+from backend.common import (ENDPOINTS, _chat_via, _load_subs, _save_subs,
                             bind_worker_env, env_key, run_chain, vapid_pubkey)
 from backend.prompt_data import PROMPTS
 from backend.time_context import DEFAULT_TZ_OFFSET, build_time_context, clamp_tz
@@ -54,6 +54,26 @@ def to_messages(
 def read_prompt(name: str) -> str:
     """取 prompt 内容。种类与来源见 backend/prompt_data.py（tools/gen_prompts.py 生成）。"""
     return PROMPTS[name.removesuffix(".md")]
+
+
+# 拆分是独立的窄任务调用（抄 MaiBot）：不让写回复的模型顺便分行——两个目标互相干扰，它总会倒向写完整内容。
+SPLITTER_MODEL = {"name": "minimax/minimax-m3.1-flash:free", "endpoint": "kilo"}
+
+
+async def split_reply(text: str) -> str:
+    """拆成适合逐条发送的短消息，用 \n 接回（前端按行拆泡、各自配 typing）。
+    校验不过或调用失败就原样返回：拆分永远不许把回复弄丢或改脏。"""
+    try:
+        raw = await _chat_via(SPLITTER_MODEL, [
+            {"role": "system", "content": read_prompt("reply_splitter")},
+            {"role": "user", "content": text}])
+        parts = [p.strip() for p in json.loads(
+            raw.strip().strip("`").removeprefix("json").strip()) if p.strip()]
+        if "".join("".join(parts).split()) != "".join(text.split()):
+            return text  # 不值得拆（no_split）或模型改了内容：都不信，原样返回
+        return "\n".join(parts)
+    except Exception:
+        return text
 
 
 # 离线代打的主动指令，与 site/js/live.js 的 PRO_REQ 同一份文案。
@@ -405,6 +425,7 @@ class Default(WorkerEntrypoint):
                 if directive:
                     msgs.append({"role": "user", "content": directive})
                 out = await run_chain(msgs)
+                out["content"] = await split_reply(out.get("content") or "")
             except RuntimeError as e:
                 print(f"chat failure unit={unit}: {e}")
                 return Response.json({"error": str(e)}, status=502)

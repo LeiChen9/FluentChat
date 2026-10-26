@@ -16,8 +16,8 @@ VOICE = "Kore"
 # 允许的 Unit 白名单。前端只能传这些 id，避免任意文件读取。
 UNITS = {f"unit-{i:02d}" for i in range(1, 13)}
 
-# Persona 好友（聊天列表）。prompt 是 prompts/personas/persona-*.md，
-# 每人一条自己的声线 —— 见 prompts/personas.md 的声线速查表。
+# Persona 好友（聊天列表）。prompt 是 site/assets/contacts/<id>/persona.md，
+# 每人一条自己的声线 —— 见下面 VOICE_BY_ID。
 PERSONAS = {"persona-leo", "persona-chole", "persona-sam", "persona-Fiona"}
 VOICE_BY_ID = {
     "persona-leo": "Puck",    # Upbeat · 男

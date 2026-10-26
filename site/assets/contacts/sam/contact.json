@@ -10,7 +10,7 @@
     240
   ],
   "reply": [[1, 6, 30]],
-  "maxSentences": 4,
+  "maxSentences": null,
   "burst": [
     0.25,
     1

@@ -16,4 +16,4 @@
 3. [ ] persona 调度规则、互动状态同步、LLM 消息生成及 Cron 推送
 
 ## 备忘
-- Unit 教学 RPG 化的想法：3 个 persona 直接当 Unit 教学主角，教学目标藏进轻松聊天的剧情里，整体像一场 RPG。具体剧情映射未定，现阶段 Unit 训练与 persona 好友保持分离（见 prompts/personas.md 现状）。
+- Unit 教学 RPG 化的想法：3 个 persona 直接当 Unit 教学主角，教学目标藏进轻松聊天的剧情里，整体像一场 RPG。具体剧情映射未定，现阶段 Unit 训练与 persona 好友保持分离（人设见 site/assets/contacts/*/persona.md）。

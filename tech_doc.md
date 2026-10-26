@@ -40,6 +40,20 @@
 - **模型 `gemini-3.8-live`**。已实测可拿到 `setupComplete`，虽然它不出现在
   `/v1beta/models` 列表里（该列表不返回任何 live/native-audio 模型，别用它选型）。
 
+## Persona 文字聊天（IM 风格回复链）
+
+链路：浏览器 POST `/chat`（unit + history + directive）→ Worker `run_chain` 生成整段回复 → `split_reply` 再调一次快模型专职拆条 → 用 `\n` 接回 `content` → 前端 `keepLines` 留住换行 → `sliceReply` 按行拆泡 → `deliverParts` 逐条落，每条前摆 typing。
+
+设计约束（都踩过坑，改前先看）：
+
+- **换行就是发送键**。模型表达「这是两条消息」的唯一方式是换行，所以 `keepLines()` 只压内部空白、留住 `\n`。曾经的坑：`clean()` 的 `\s+ → " "` 把换行当垃圾抹掉，整条多气泡链因此失效。
+- **拆分是独立的第二次 LLM 调用**（`worker.py: split_reply` + `prompts/reply_splitter.md`，思路抄 MaiBot `src/chat/utils/llm_sentence_splitter.py`）。不让写回复的模型顺便分行——两个目标互相干扰，它必然倒向写完整内容。拆完做强校验：忽略空白后必须与原文逐字符一致，否则原样返回；`no_split`、解析失败、调用失败同样安全退化，绝不给前台塞坏数据。
+- **persona 只写性格，不写行为**。气泡长短由 `prompts/text_style.md` 的媒介物理决定：一个气泡是一个冲动、长度是让对方付的等待代价、细节是道具不是汇报清单、一条最多一个问题。性格只决定每个人的默认倾向。机械句数阈值已从 `contact.json` 撤掉（全 `null`），只留 160 字渲染兜底。
+- **风格靠演示和语料，不靠形容词**。prompt 里放了「一坨 vs 分行」的对比样例；更强的活人感要靠从真实聊天学句式（MaiBot 的 `expression_learner`），尚未做。
+- **节奏**：每条后续气泡等 `1.2-3s + clamp(本条字数×45ms, 1.2-9s)`。用户说话期间 NPC 说完当前这条再另起一轮（`beginReply` 排队 + `deliverReply` 完成回调补轮），不丢弃在途回复。
+- typing 指示器钉在消息流末尾，用户半路插话不会掉到它下面。
+- 改了 `site/` 必须 `wrangler deploy` 并戳 `index.html`/`app.js` 的 `?v=`，否则手机吃缓存。本机 `npx wrangler` 会因 npm 缓存目录 root 所有而失败，直接用 `~/.npm/_npx/*/node_modules/.bin/wrangler`。
+
 ## Web Push（iOS 主屏幕 Web App）
 
 - 用户需在 iOS 16.4+ 的 Safari 中分享网站并选择“添加到主屏幕”，再从主屏幕打开 Web App 并主动授权通知；普通 Safari 标签页不支持此推送流程。

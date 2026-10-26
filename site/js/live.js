@@ -113,6 +113,7 @@ export function initChat({ show, back, openCall }) {
   // Gemini 偶吐占位符（<no speech> / {pause} …，音频停顿的转写脚注），别当台词
   const JUNK = /(?:<no\s*speech>|<silence>|<pause>|\{\s*pause\s*\}|\{\s*beat\s*\}|\{\s*hesitate\s*\}|\{\s*long\s*pause\s*\})/gi;
   const clean = (text) => String(text).replace(JUNK, " ").replace(/\s+/g, " ").trim();
+  const keepLines = (text) => String(text).replace(JUNK, " ").split(/\n+/).map((l) => l.replace(/\s+/g, " ").trim()).filter(Boolean).join("\n");
   const lastLine = (id) => {
     const talk = loadHist(id).filter((h) => !h.hidden && (h.who === "me" || h.who === "ai"));
     const last = talk[talk.length - 1];
@@ -240,6 +241,7 @@ export function initChat({ show, back, openCall }) {
     node.className = `msg msg--${who}`;
     node.textContent = text;
     body.append(node);
+    if (typingEl) body.append(typingEl); // typing 永远钉在末尾：用户半路插话别被挤到它下面
     scrollDown(true);
     return node;
   }
@@ -277,7 +279,11 @@ export function initChat({ show, back, openCall }) {
   // 长回复拆条：再「一次把话讲完」的人也不发一坨长文 —— 按句子分堆，
   // 每堆 ≤ MAX_BUBBLE，第一段立落，后面的间隔 = 1.2-3 秒 + 下一段打字时间。
   const MAX_BUBBLE = 160;
+  // 换行 = 模型明说的另一条消息：先按行拆，一行一泡；单行超长才走句子/字数兜底
   function sliceReply(text, maxSentences) {
+    return String(text).split("\n").flatMap((l) => sliceLine(l, maxSentences));
+  }
+  function sliceLine(text, maxSentences) {
     const limit = Number.isFinite(maxSentences) ? maxSentences : Infinity;
     const parts = text.match(/[^.!?…。！？]+[.!?…。！？]*/g) || [text];
     if (text.length <= MAX_BUBBLE && parts.length <= limit) return [text];
@@ -447,7 +453,7 @@ export function initChat({ show, back, openCall }) {
 
   // 文案就绪落气泡：开着本对话按节奏逐条出（多条间再摆 typing），没开着走后台路径
   function deliverReply(u, st) {
-    const text = clean(st.text);
+    const text = keepLines(st.text);
     replies.delete(u.id);
     if (!text) return;
     if (unit !== u || mode !== "text") { deliverProactive(u, text); return; }
@@ -512,9 +518,9 @@ export function initChat({ show, back, openCall }) {
     if (proTimer) return;
     proTimer = setInterval(() => {
       paintDots();
-      // 有回复/主动消息在途的人不参与抽签，避免两路生成共用旧历史、也避免白扣名额
+      // 有回复/主动消息在途、或上一条还没落完的人不参与抽签，避免两路生成共用旧上下文、也避免白扣名额
       const idle = people.filter((p) =>
-        !replies.has(p.id) && !proBusy.has(p.id) && !proFail.has(p.id));
+        !replies.has(p.id) && !proBusy.has(p.id) && !proFail.has(p.id) && !delivery);
       for (const p of proactiveTick(idle, new Date())) fireProactive(p);
     }, PRO_MINUTE);
   }
@@ -529,7 +535,7 @@ export function initChat({ show, back, openCall }) {
     noteReply(p, new Date()); // 想开口先升 active
     let text = "";
     try {
-      text = clean(await genProactive(p, retried, epoch));
+      text = await genProactive(p, retried, epoch); // genChat 已 keepLines：换行要留住
     } finally {
       proBusy.delete(p.id);
     }
@@ -552,7 +558,7 @@ export function initChat({ show, back, openCall }) {
     });
     const data = await res.json();
     if (!res.ok || !data.content) throw new Error(data.error || `HTTP ${res.status}`);
-    const text = clean(data.content);
+    const text = keepLines(data.content);
     if (!text) throw new Error("blank reply");
     return text;
   }
@@ -583,23 +589,22 @@ export function initChat({ show, back, openCall }) {
 
   // 落地：开着本对话就在页里出气泡进记忆；没开着只落盘 + 刷列表预览。
   function deliverProactive(p, text) {
+    const parts = sliceReply(text);
     if (unit === p && mode === "text") {
       noteReply(p, new Date()); // 正式开口，再锁一次 glow
-      const parts = sliceReply(text);
-      for (const t of parts) { addBubble("ai", t); pushHist({ who: "ai", text: t, t: Date.now() }); }
-      lastAiAt = Date.now(); // 用户马上接话 = 话题正热的参照点
+      deliverParts(parts, () => { lastAiAt = Date.now(); }); // 逐条出，配真人打字速度
       return;
     }
     // 对话页没开：写进本地历史，回页时自然渲染；列表预览提个醒+置顶
     const arr = loadHist(p.id);
-    arr.push({ who: "ai", text, t: Date.now() });
+    for (const t of parts) arr.push({ who: "ai", text: t, t: Date.now() });
     const KEEP = arr.slice(-HIST_MAX);
     try { localStorage.setItem(HIST_KEY + p.id, JSON.stringify(KEEP)); } catch {}
     mirrorHist(p.id);
     bumpRow(p.id);
     const row = rowOf.get(p.id);
     if (row) {
-      row.preview.textContent = clip(text);
+      row.preview.textContent = clip(parts[parts.length - 1]);
       row.time.textContent = fmtRowTime(Date.now());
     }
     // 没看着的消息就是未读
