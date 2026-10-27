@@ -26,6 +26,15 @@ VOICE_BY_ID = {
     "persona-Fiona": "Aoede", # Calm · 女
 }
 
+# 回复切分：AI 判断 user_mood / need 后，按每人的发消息习惯决定每泡最多几句。
+# short / medium / long 由 worker.reply_bucket() 决定；表里没有的 persona 用 2。
+SPLIT_CAPS = {
+    "persona-leo": {"short": 1, "medium": 2, "long": 3},
+    "persona-chole": {"short": 2, "medium": 2, "long": 3},
+    "persona-sam": {"short": 2, "medium": 3, "long": 4},
+    "persona-Fiona": {"short": 2, "medium": 3, "long": 3},
+}
+
 # 随 token 注入 system instruction 的历史：掐条数、掐单条长度，
 # 免得请求体膨胀（也防前端传一堆垃圾进来）。
 HIST_MAX_ITEMS = 30

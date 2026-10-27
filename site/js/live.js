@@ -278,7 +278,7 @@ export function initChat({ show, back, openCall }) {
   // 本轮攒下的话一次性落成气泡，并写进本地历史。
   // 长回复拆条：再「一次把话讲完」的人也不发一坨长文 —— 按句子分堆，
   // 每堆 ≤ MAX_BUBBLE，第一段立落，后面的间隔 = 1.2-3 秒 + 下一段打字时间。
-  const MAX_BUBBLE = 160;
+  const MAX_BUBBLE = 600;
   // 换行 = 模型明说的另一条消息：先按行拆，一行一泡；单行超长才走句子/字数兜底
   function sliceReply(text, maxSentences) {
     return String(text).split("\n").flatMap((l) => sliceLine(l, maxSentences));
@@ -504,8 +504,9 @@ export function initChat({ show, back, openCall }) {
     "right now. Approach it from a different angle than your previous proactive " +
     "texts: share a slice of your day, wonder what I'm up to, or revisit an old " +
     "topic with something new. Let the time since we last talked shape how you " +
-    "open. 1-2 short casual sentences. Not a meta-greeting, don't mention " +
-    "that you haven't heard from me.)";
+    "open. Keep it a quick text: usually a few words or one short sentence, two " +
+    "short sentences at most; a polished paragraph is not how friends text. " +
+    "Not a meta-greeting, don't mention that you haven't heard from me.)";
   const PRO_RETRY_MS = 90000; // 生成失败缓 1.5 分钟再试，一次为限
   const BURST_REQ =
     "(Follow-up turn: you just texted and, like a real friend, you want to add one " +
@@ -639,16 +640,25 @@ export function initChat({ show, back, openCall }) {
 
   function prewarmHist() {
     loadContacts().then((list) => list.forEach((p) => {
-      if (loadHist(p.id).length) return;
       fetch(`/hist/${p.id}`).then((r) => r.ok ? r.json() : null).then((arr) => {
-        if (!loadHist(p.id).length && Array.isArray(arr) && arr.length) {
+        if (!Array.isArray(arr) || !arr.length) return;
+        const key = (i) => `${i.kind || "b"}|${i.id || ""}|${i.who}|${i.text}|${i.t ?? ""}`;
+        const seen = new Set(loadHist(p.id).map(key));
+        const news = arr.filter((c) => c && c.who === "ai" && !c.hidden && !seen.has(key(c)));
+        let last = null;
+        if (!seen.size) { // 本机没历史：整包落盘，老消息不算未读
           try { localStorage.setItem(HIST_KEY + p.id, JSON.stringify(arr.slice(-HIST_MAX))); } catch {}
-          const row = rowOf.get(p.id), last = arr.filter((h) => !h.hidden && (h.who === "me" || h.who === "ai")).at(-1);
-          if (row && last) {
-            row.preview.textContent = clip((last.who === "me" ? "You: " : "") + last.text);
-            row.time.textContent = last.t ? fmtRowTime(last.t) : "";
-            bumpRow(p.id, last.t || 0);
-          }
+          last = arr.filter((h) => !h.hidden && (h.who === "me" || h.who === "ai")).at(-1);
+        } else if (news.length) { // 本机有历史：云端多出的 ai 消息 = 离线未读
+          unread.set(p.id, (unread.get(p.id) || 0) + news.length);
+          setBadge(p.id);
+          last = news.at(-1);
+        } else return;
+        const row = rowOf.get(p.id);
+        if (row && last) {
+          row.preview.textContent = clip((last.who === "me" ? "You: " : "") + last.text);
+          row.time.textContent = last.t ? fmtRowTime(last.t) : "";
+          bumpRow(p.id, last.t || 0);
         }
       }).catch(() => {});
     }));

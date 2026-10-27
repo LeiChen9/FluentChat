@@ -22,12 +22,12 @@ from urllib.parse import urlsplit
 from workers import Response, WorkerEntrypoint, fetch as js_fetch
 from backend import auth
 from backend import cloud_npc
-from backend.common import (ENDPOINTS, _chat_via, _load_subs, _save_subs,
+from backend.common import (ENDPOINTS, _load_subs, _save_subs,
                             bind_worker_env, env_key, run_chain, vapid_pubkey)
 from backend.prompt_data import PROMPTS
 from backend.time_context import DEFAULT_TZ_OFFSET, build_time_context, clamp_tz
 from backend.config import (AUTH_TOKENS_URL, HIST_MAX_CHARS, HIST_MAX_ITEMS,
-                            MODEL, PERSONAS, UNITS, VOICE, VOICE_BY_ID)
+                            MODEL, PERSONAS, SPLIT_CAPS, UNITS, VOICE, VOICE_BY_ID)
 
 
 def to_messages(
@@ -38,7 +38,8 @@ def to_messages(
     sys_text = (
         f"{read_prompt('text_style')}\n\n"
         f"{read_prompt(unit)}\n\n"
-        f"{ctx['header']}"
+        f"{ctx['header']}\n\n"
+        f"{read_prompt('chat_json')}"
     )
     msgs = [{"role": "system", "content": sys_text}]
     if not history:
@@ -56,24 +57,68 @@ def read_prompt(name: str) -> str:
     return PROMPTS[name.removesuffix(".md")]
 
 
-# 拆分是独立的窄任务调用（抄 MaiBot）：不让写回复的模型顺便分行——两个目标互相干扰，它总会倒向写完整内容。
-SPLITTER_MODEL = {"name": "minimax/minimax-m3.1-flash:free", "endpoint": "kilo"}
+# 发送节奏：模型先判断 user_mood / need，再按 persona 的句数档位切泡。
+# 切分只切不改；JSON 解析失败就按 medium 档处理原文，永不丢内容。
+SENT_RE = re.compile(r"(?<=[.!?…])\s+")
+LONG_MOOD = {"heavy", "distressed"}
+LONG_NEED = {"comfort", "space"}
+MEDIUM_MOOD = {"okay", "low"}
+SHORT_MOOD = {"light", "excited"}
+SHORT_NEED = {"banter", "company", "answer"}
 
 
-async def split_reply(text: str) -> str:
-    """拆成适合逐条发送的短消息，用 \n 接回（前端按行拆泡、各自配 typing）。
-    校验不过或调用失败就原样返回：拆分永远不许把回复弄丢或改脏。"""
+def reply_bucket(mood: str, need: str) -> str:
+    if mood in LONG_MOOD or need in LONG_NEED:
+        return "long"
+    if need == "advice" or mood in MEDIUM_MOOD:
+        return "medium"
+    if mood in SHORT_MOOD and (not need or need in SHORT_NEED):
+        return "short"
+    return "medium"
+
+
+def parse_chat(raw: str) -> dict:
+    """取 JSON 里的 reply / user_mood / need；不是 JSON 就把原文当回复。"""
+    s = raw.strip()
+    if s.startswith("```"):
+        s = re.sub(r"^```[A-Za-z]*\s*", "", s)
+        s = re.sub(r"\s*```$", "", s)
     try:
-        raw = await _chat_via(SPLITTER_MODEL, [
-            {"role": "system", "content": read_prompt("reply_splitter")},
-            {"role": "user", "content": text}])
-        parts = [p.strip() for p in json.loads(
-            raw.strip().strip("`").removeprefix("json").strip()) if p.strip()]
-        if "".join("".join(parts).split()) != "".join(text.split()):
-            return text  # 不值得拆（no_split）或模型改了内容：都不信，原样返回
-        return "\n".join(parts)
+        obj = json.loads(s)
     except Exception:
-        return text
+        m = re.search(r"\{.*\}", s, re.S)
+        try:
+            obj = json.loads(m.group(0)) if m else {}
+        except Exception:
+            obj = {}
+    reply = obj.get("reply") if isinstance(obj, dict) else None
+    if not isinstance(reply, str) or not reply.strip():
+        reply = "" if s.startswith("{") else raw.strip()
+        return {"reply": reply, "user_mood": "", "need": ""}
+    return {"reply": reply.strip(),
+            "user_mood": str(obj.get("user_mood") or "").lower(),
+            "need": str(obj.get("need") or "").lower()}
+
+
+def split_reply(unit: str, raw: str) -> list[str]:
+    """按 AI 的判断 + persona 习惯把回复分组成气泡；只切，不改字。"""
+    p = parse_chat(raw)
+    if not p["reply"]:
+        return []
+    cap = SPLIT_CAPS.get(unit, {}).get(reply_bucket(p["user_mood"], p["need"]), 2)
+    parts = []
+    for line in re.split(r"\n+", p["reply"]):
+        heap = []
+        for sentence in (x.strip() for x in SENT_RE.split(line.strip()) if x.strip()):
+            heap.append(sentence)
+            if len(heap) >= cap:
+                parts.append(" ".join(heap))
+                heap = []
+        if heap:
+            parts.append(" ".join(heap))
+    if len(parts) > 3:
+        parts = parts[:2] + [" ".join(parts[2:])]
+    return parts
 
 
 # 离线代打的主动指令，与 site/js/live.js 的 PRO_REQ 同一份文案。
@@ -84,8 +129,9 @@ PRO_REQ = (
     "right now. Approach it from a different angle than your previous proactive "
     "texts: share a slice of your day, wonder what I'm up to, or revisit an old "
     "topic with something new. Let the time since we last talked shape how you "
-    "open. 1-2 short casual sentences. Not a meta-greeting, don't mention "
-    "that you haven't heard from me.)"
+    "open. Keep it a quick text: usually a few words or one short sentence, two "
+    "short sentences at most; a polished paragraph is not how friends text. "
+    "Not a meta-greeting, don't mention that you haven't heard from me.)"
 )
 
 
@@ -425,7 +471,9 @@ class Default(WorkerEntrypoint):
                 if directive:
                     msgs.append({"role": "user", "content": directive})
                 out = await run_chain(msgs)
-                out["content"] = await split_reply(out.get("content") or "")
+                parts = split_reply(unit, out.get("content") or "")
+                out["content"] = "\n".join(parts)
+                print(f"chat reply unit={unit} bubbles={len(parts)}")
             except RuntimeError as e:
                 print(f"chat failure unit={unit}: {e}")
                 return Response.json({"error": str(e)}, status=502)
@@ -667,19 +715,20 @@ class Default(WorkerEntrypoint):
             msgs = to_messages(unit, sanitize_history(hist))
             msgs.append({"role": "user", "content": PRO_REQ})
             out = await run_chain(msgs)
-            text = out.get("content", "")
+            parts = split_reply(unit, out.get("content", ""))
         except Exception:
             return  # 名额已扣；下一天/下一 tick 再说
-        if not text.strip():
+        if not parts:
             return
         # 落库保全量（t 是云端合流的排序键，prompt 才用清洗版）
-        text = text.strip()
-        hist.append({"who": "ai", "text": text, "t": cloud_npc.now_ms()})
+        t0 = cloud_npc.now_ms()
+        for i, part in enumerate(parts):
+            hist.append({"who": "ai", "text": part, "t": t0 + i})
         await env.DATA.put(
             f"{user}/hist/{unit}.json",
             json.dumps(hist[-HIST_MAX_ITEMS:], ensure_ascii=False))
         # 镜像落库后接横幅（片 3c）：正文照样在，横幅按本机 notif 偏好发送
-        await self._push(env, user, unit, contact, text)
+        await self._push(env, user, unit, contact, " ".join(parts))
 
     # 把一条离线消息从系统横幅送出去（iOS 桌面 web app = 横幅，无图标角标）。
     # notif 三档：off 不发；ticker 只提示有消息；preview 带正文。失效订阅

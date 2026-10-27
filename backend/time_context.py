@@ -126,7 +126,7 @@ def build_time_context(history, tz_offset=DEFAULT_TZ_OFFSET, now_ms=None) -> dic
         "hello is natural, with only a light callback to what you last discussed. "
         "You don't have to mention the gap.\n\n"
         f"Now: {now.strftime('%A')} {_part_of_day(now.hour)}, "
-        f"{now.strftime('%b')} {now.day}, {now.year}.\n"
+        f"{now.strftime('%-I:%M %p')}, {now.strftime('%b')} {now.day}, {now.year}.\n"
         f"{last_line}\n"
         "History dates are shown when the day changes."
     )
