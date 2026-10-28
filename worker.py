@@ -22,6 +22,7 @@ from urllib.parse import urlsplit
 from workers import Response, WorkerEntrypoint, fetch as js_fetch
 from backend import auth
 from backend import cloud_npc
+from backend import life
 from backend.common import (ENDPOINTS, _load_subs, _save_subs,
                             bind_worker_env, env_key, run_chain, vapid_pubkey)
 from backend.prompt_data import PROMPTS
@@ -31,16 +32,13 @@ from backend.config import (AUTH_TOKENS_URL, HIST_MAX_CHARS, HIST_MAX_ITEMS,
 
 
 def to_messages(
-    unit: str, history: list[dict], tz_offset: int = DEFAULT_TZ_OFFSET
+    unit: str, history: list[dict], tz_offset: int = DEFAULT_TZ_OFFSET,
+    life_state: dict | None = None, contact: dict | None = None,
 ) -> list[dict]:
     """NPC 只使用 contacts 下的人设 prompt，历史转 user/assistant。"""
     ctx = build_time_context(history, tz_offset)
-    sys_text = (
-        f"{read_prompt('text_style')}\n\n"
-        f"{read_prompt(unit)}\n\n"
-        f"{ctx['header']}\n\n"
-        f"{read_prompt('chat_json')}"
-    )
+    sys_text = (_persona_system(unit, tz_offset, ctx['header'], life_state, contact)
+                + "\n\n" + read_prompt('chat_json'))
     msgs = [{"role": "system", "content": sys_text}]
     if not history:
         msgs.append({"role": "user", "content": "(Wait for the user to start.)"})
@@ -57,28 +55,33 @@ def read_prompt(name: str) -> str:
     return PROMPTS[name.removesuffix(".md")]
 
 
-# 发送节奏：模型先判断 user_mood / need，再按 persona 的句数档位切泡。
+def _persona_system(unit: str, tz_offset: int, header: str,
+                    life_state: dict | None, contact: dict | None) -> str:
+    """persona 的 system 主体：媒介规则 + 性格 + 他此刻的生活 + 时间感。"""
+    blocks = [read_prompt('text_style'), read_prompt(unit)]
+    if life_state is not None:
+        blocks.append(life.render(life_state, contact or {},
+                                  cloud_npc.now_ms(), tz_offset))
+    blocks.append(header)
+    return "\n\n".join(blocks)
+
+
+# 发送节奏：模型先判断自己此刻的能量，再按 persona 的句数档位切泡。
 # 切分只切不改；JSON 解析失败就按 medium 档处理原文，永不丢内容。
 SENT_RE = re.compile(r"(?<=[.!?…])\s+")
-LONG_MOOD = {"heavy", "distressed"}
-LONG_NEED = {"comfort", "space"}
-MEDIUM_MOOD = {"okay", "low"}
-SHORT_MOOD = {"light", "excited"}
-SHORT_NEED = {"banter", "company", "answer"}
 
 
-def reply_bucket(mood: str, need: str) -> str:
-    if mood in LONG_MOOD or need in LONG_NEED:
-        return "long"
-    if need == "advice" or mood in MEDIUM_MOOD:
-        return "medium"
-    if mood in SHORT_MOOD and (not need or need in SHORT_NEED):
+def reply_bucket(energy) -> str:
+    e = energy if isinstance(energy, (int, float)) and not isinstance(energy, bool) else 0.5
+    if e < 0.4:
         return "short"
-    return "medium"
+    if e < 0.7:
+        return "medium"
+    return "long"
 
 
 def parse_chat(raw: str) -> dict:
-    """取 JSON 里的 reply / user_mood / need；不是 JSON 就把原文当回复。"""
+    """取 JSON 里的 reply / energy / thread；不是 JSON 就把原文当回复。"""
     s = raw.strip()
     if s.startswith("```"):
         s = re.sub(r"^```[A-Za-z]*\s*", "", s)
@@ -94,10 +97,14 @@ def parse_chat(raw: str) -> dict:
     reply = obj.get("reply") if isinstance(obj, dict) else None
     if not isinstance(reply, str) or not reply.strip():
         reply = "" if s.startswith("{") else raw.strip()
-        return {"reply": reply, "user_mood": "", "need": ""}
-    return {"reply": reply.strip(),
-            "user_mood": str(obj.get("user_mood") or "").lower(),
-            "need": str(obj.get("need") or "").lower()}
+        return {"reply": reply, "energy": None, "thread": ""}
+    energy = obj.get("energy")
+    if not isinstance(energy, (int, float)) or isinstance(energy, bool):
+        energy = None
+    else:
+        energy = max(0.0, min(1.0, float(energy)))
+    return {"reply": reply.strip(), "energy": energy,
+            "thread": str(obj.get("thread") or "").strip()}
 
 
 def split_reply(unit: str, raw: str) -> list[str]:
@@ -105,7 +112,7 @@ def split_reply(unit: str, raw: str) -> list[str]:
     p = parse_chat(raw)
     if not p["reply"]:
         return []
-    cap = SPLIT_CAPS.get(unit, {}).get(reply_bucket(p["user_mood"], p["need"]), 2)
+    cap = SPLIT_CAPS.get(unit, {}).get(reply_bucket(p["energy"]), 2)
     parts = []
     for line in re.split(r"\n+", p["reply"]):
         heap = []
@@ -202,9 +209,7 @@ def sanitize_history(raw) -> list[dict]:
         if isinstance(ts, (int, float)) and ts > 0:
             entry["t"] = int(ts)
         out.append(entry)
-        if len(out) >= HIST_MAX_ITEMS:
-            break
-    return out
+    return out[-HIST_MAX_ITEMS:]
 
 
 def clean_call_turns(raw) -> list[dict]:
@@ -280,7 +285,8 @@ def call_review_messages(turns: list[dict]) -> list[dict]:
 
 def build_system_instruction(
     unit: str, history: list[dict] | None = None,
-    tz_offset: int = DEFAULT_TZ_OFFSET
+    tz_offset: int = DEFAULT_TZ_OFFSET,
+    life_state: dict | None = None, contact: dict | None = None,
 ) -> str:
     """把基础教学规则、persona 与本次话题拼成一份完整 prompt。
 
@@ -292,11 +298,7 @@ def build_system_instruction(
     base_name = "base-ch2.md" if unit in ("unit-07", "unit-08", "unit-09", "unit-10", "unit-11", "unit-12") else "base.md"
     if unit in PERSONAS:
         ctx = build_time_context(history, tz_offset)
-        text = (
-            f"{read_prompt('text_style')}\n\n"
-            f"{read_prompt(unit)}\n\n"
-            f"{ctx['header']}"
-        )
+        text = _persona_system(unit, tz_offset, ctx['header'], life_state, contact)
         dated = ctx["history"]
     else:
         text = f"{read_prompt(base_name)}\n\n{read_prompt(f'{unit}.md')}"
@@ -330,7 +332,8 @@ def build_system_instruction(
 
 def build_token_payload(
     unit: str, history: list[dict] | None = None,
-    tz_offset: int = DEFAULT_TZ_OFFSET
+    tz_offset: int = DEFAULT_TZ_OFFSET,
+    life_state: dict | None = None, contact: dict | None = None,
 ) -> dict:
     """构造签发请求体。unit 参数横跨两类 id：unit-XX 和 persona-xxx。
 
@@ -348,7 +351,8 @@ def build_token_payload(
             "model": f"models/{MODEL}",
             "systemInstruction": {
                 "parts": [
-                    {"text": build_system_instruction(unit, history, tz_offset)}
+                    {"text": build_system_instruction(unit, history, tz_offset,
+                                                      life_state, contact)}
                 ]
             },
             "generationConfig": {
@@ -365,6 +369,16 @@ def build_token_payload(
             "inputAudioTranscription": {},
         },
     }
+
+
+async def _contact(env, unit: str) -> dict | None:
+    """画像真源是 contact.json（ASSETS，与浏览器同一份文件）。"""
+    try:
+        res = await env.ASSETS.fetch(
+            f"https://assets.local/assets/contacts/{unit.removeprefix('persona-')}/contact.json")
+        return await res.json() if res.ok else None
+    except Exception:
+        return None
 
 
 class Default(WorkerEntrypoint):
@@ -466,17 +480,25 @@ class Default(WorkerEntrypoint):
             # 可选：主动消息场景的临时指令（最后一条 user 消息，模型照办开口）
             directive = str(body.get("directive") or "").strip()[:400]
             print(f"chat request unit={unit} history={len(history)} directive={1 if directive else 0}")
+            contact = await _contact(self.env, unit) or {}
+            now = cloud_npc.now_ms()
+            lif = life.settle(await life.load(self.env, user, unit), contact, now, tz_offset)
             try:
-                msgs = to_messages(unit, history, tz_offset)
+                msgs = to_messages(unit, history, tz_offset, lif, contact)
                 if directive:
                     msgs.append({"role": "user", "content": directive})
                 out = await run_chain(msgs)
+                parsed = parse_chat(out.get("content") or "")
                 parts = split_reply(unit, out.get("content") or "")
                 out["content"] = "\n".join(parts)
                 print(f"chat reply unit={unit} bubbles={len(parts)}")
             except RuntimeError as e:
                 print(f"chat failure unit={unit}: {e}")
                 return Response.json({"error": str(e)}, status=502)
+            try:
+                await life.save(self.env, user, unit, life.apply_chat(lif, parsed, now))
+            except Exception as e:
+                print(f"[life] {user}/{unit} save failed: {type(e).__name__}: {e}")
             return Response.json(out)
 
         # ── 通话点评：挂断后前端把整段转写发来，一次性返回逐句建议 + 总评 ──
@@ -594,6 +616,13 @@ class Default(WorkerEntrypoint):
         history = sanitize_history(body.get("history"))
         tz_offset = clamp_tz(body.get("tz"))
 
+        # 通话也带上他此刻的生活（与 /chat 同一份状态）
+        life_state, contact = None, None
+        if unit in PERSONAS:
+            contact = await _contact(self.env, unit) or {}
+            life_state = life.settle(await life.load(self.env, user, unit),
+                                     contact, cloud_npc.now_ms(), tz_offset)
+
         # 调 Gemini 签发 token；fetch / 非 200 / 解析三种不快活统一 502
         try:
             resp = await js_fetch(
@@ -603,7 +632,8 @@ class Default(WorkerEntrypoint):
                     "x-goog-api-key": env_key("GEMINI_API_KEY"),
                     "Content-Type": "application/json",
                 },
-                body=json.dumps(build_token_payload(unit, history, tz_offset)),
+                body=json.dumps(build_token_payload(unit, history, tz_offset,
+                                                    life_state, contact)),
             )
             if resp.status != 200:
                 detail = await resp.text()
@@ -648,13 +678,14 @@ class Default(WorkerEntrypoint):
 
         offline, wrote, diag = [], [], []
         for user in users:
+            # 自检模式只跑指定用户；正常轮跑全部 —— 日界推进与在不在线无关
+            if one_user is not None and user != one_user:
+                continue
+            await self._life_sweep(env, user, now)
             state = await cloud_npc.load_state(env, user)
             seen = state.get("lastSeen")
-            # 自检模式：指定用户强制进流程；正常模式下按心跳判定
-            if one_user is not None:
-                if user != one_user:
-                    continue
-            elif not (isinstance(seen, (int, float)) and 0 < seen < now * 1000 - cloud_npc.OFFLINE_MS):
+            if one_user is None and not (
+                    isinstance(seen, (int, float)) and 0 < seen < now * 1000 - cloud_npc.OFFLINE_MS):
                 continue  # 心跳活着（在线）或从未登录 → 浏览器自己管
             offline.append(user)
             ledgers = state.get("ledger") if isinstance(state.get("ledger"), dict) else {}
@@ -664,13 +695,7 @@ class Default(WorkerEntrypoint):
                 if not unit.startswith("persona-"):
                     continue
                 # 画像真源是 contact.json（ASSETS 与浏览器同一份文件）
-                contact = None
-                try:
-                    res = await env.ASSETS.fetch(
-                        f"https://assets.local/assets/contacts/{unit.removeprefix('persona-')}/contact.json")
-                    contact = await res.json() if res.ok else None
-                except Exception:
-                    pass
+                contact = await _contact(env, unit)
                 if not isinstance(contact, dict):
                     diag.append({"unit": unit, "err": "contact load failed"})
                     continue
@@ -704,6 +729,35 @@ class Default(WorkerEntrypoint):
             print(f"[cron] offline passed={'watch' if one_user is None else 'kick'}={offline} wrote={wrote}")
         return wrote, diag
 
+    # 每人每天一次日界：把他的一天生成出来。在线离线都推进 —— 他的时间线
+    # 不因你在不在线而停。失败先记 attempt，30 分钟内不重试，别刷链。
+    async def _life_sweep(self, env, user: str, now: float) -> None:
+        now_ms = now * 1000.0
+        today = life.day_stamp(now_ms)
+        for unit in PERSONAS:
+            if not unit.startswith("persona-"):
+                continue
+            try:
+                contact = await _contact(env, unit)
+                if not isinstance(contact, dict):
+                    continue
+                lif = life.settle(await life.load(env, user, unit), contact, now_ms)
+                if not life.needs_day(lif, now_ms):
+                    continue
+                lif = life.mark_attempt(lif, now_ms)
+                await life.save(env, user, unit, lif)
+                obj = await env.DATA.get(f"{user}/hist/{unit}.json")
+                hist = json.loads(await obj.text()) if obj is not None else []
+                if not isinstance(hist, list):
+                    hist = []
+                out = await run_chain(
+                    life.day_messages(unit, contact, lif, sanitize_history(hist), now_ms))
+                day = life.parse_day(out.get("content") or "")
+                await life.save(env, user, unit, life.apply_day(lif, day, today, now_ms))
+                print(f"[life] {user}/{unit} day rolled events={len(day['events'])}")
+            except Exception as e:
+                print(f"[life] {user}/{unit} day failed: {type(e).__name__}: {str(e)[:120]}")
+
     # 离线代打的生成与落库。链上任何一层失败就整个放弃本条：名额已扣，
     # 别让半成品消息写进镜像。
     async def _proactive(self, env, user: str, unit: str, contact: dict) -> None:
@@ -712,7 +766,9 @@ class Default(WorkerEntrypoint):
             hist = json.loads(await obj.text()) if obj is not None else []
             if not isinstance(hist, list):
                 hist = []
-            msgs = to_messages(unit, sanitize_history(hist))
+            now = cloud_npc.now_ms()
+            lif = life.settle(await life.load(env, user, unit), contact, now)
+            msgs = to_messages(unit, sanitize_history(hist), DEFAULT_TZ_OFFSET, lif, contact)
             msgs.append({"role": "user", "content": PRO_REQ})
             out = await run_chain(msgs)
             parts = split_reply(unit, out.get("content", ""))

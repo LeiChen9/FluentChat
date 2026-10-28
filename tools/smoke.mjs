@@ -57,12 +57,14 @@ function mkEl(id = "", tag = "div") {
 for (const i of ["chat-list","contact-list","moment-list","chat-name","chat-state","chat-av",
   "chat-body","chat-bar","chat-input","chat-send","chat-back","chat-call","chat-reset",
   "call","call-av","call-name","call-state","call-said","call-end",
-  "view-chats","view-contacts","view-moments","view-me","view-chat",
+  "call-back","call-list","call-detail-name","call-detail-meta","call-detail-body",
+  "auth","auth-form","auth-user","auth-pass","auth-err","auth-reg",
+  "view-chats","view-calls","view-moments","view-me","view-chat","view-call",
   "push-enable","push-note","push-err","profile-err","profile-row","me-avatar",
   "me-user","avatar-file","logout-row","notif-sheet","notif-sheet-close"]) els.set(i, mkEl(i));
 const tabs = [
   Object.assign(mkEl("", "button"), { dataset: { view: "chats" } }),
-  Object.assign(mkEl("", "button"), { dataset: { view: "contacts" } }),
+  Object.assign(mkEl("", "button"), { dataset: { view: "calls" } }),
   Object.assign(mkEl("", "button"), { dataset: { view: "moments" } }),
   Object.assign(mkEl("", "button"), { dataset: { view: "me" } }),
 ];

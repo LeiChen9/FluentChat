@@ -318,3 +318,14 @@ npx wrangler deploy                  # 改了 site/ 必须部署，workers.dev �
 - 自检 kick 加 diag（left/sent/eng/hit/contact load 失败全读出）——修完 500（_cron_sweep 返回 tuple）才知道上次「kick 空」真因：第一次 kick 已把名额扣了但生成失败、第二次连名额都没有。diag 全读后又顺对齐了窗口观感（chole 窗 20 点才开）。
 - 本地验收：prefs 非法 400 / 合法落 state、订阅写 `{user}/subs.json`；prod：kick diag 五百修复后指标开口全准。
 - 未验完：真实设备（iOS 主屏 web app）选档后横幅落地——pusher 端 VAPID 一直是那套，等用户真机打一发；20:00 后 chole 窗自然开可再验。
+
+## 自主时间线 + 文字链尾兜底（2026-10-28）
+- 病根：生成链路是请求-响应服务 —— 触发只由用户消息引起、schema 的 `need` 问「这一刻你需要我什么」、text_style 要求每轮「往前推」。人设只能决定服务的风格，决定不了位置；症状就是每轮必问、安抚 coda、道具复读（同一碗 broth 出现 6 次）。
+- 新增 `backend/life.py`：`{user}/life/{unit}.json` 存他的一天（day.date/events/attempted、energy/energy_at、threads、ledger、digest）。`settle()` 按作息目标半衰漂移能量（纯计算）；`render()` 输出 `# Your life right now`，`/chat`、`/token`、`_proactive` 都注入；`/chat` 回写 energy/thread。
+- cron 每 tick 先跑 `_life_sweep`（在线离线都推进）：跨天且过 30 分钟重试冷却才调链生成当天 events/energy/threads/digest，失败先记 attempted；`prompts/day_plan.md` 是生成 prompt，persona 仍是身份约束；events 只写他自己的生活，聊天进 digest/threads。
+- `prompts/chat_json.md` 换相遇 schema：carry/hit/energy/thread/reply；`reply_bucket` 改由 energy 决定切泡档位（不再判 user_mood/need）。`text_style.md` 姿态段从「每轮推进」改为两条时间线相交。
+- 顺手修 `sanitize_history` 取最近 30 条（原来取最旧 30 条，cron 读 R2 长历史时拿的是远古对话）。
+- 文字链尾：`ENDPOINTS` 加 `opencode`（zen 中转，带 UA + x-opencode-session），链尾 `deepseek-v4.1-flash`（gate=off_peak）→ `glm-5.3-flash`；`deepseek_open()` 跳过北京时间周一至周五 9-12、14-18（无节假日表）。`run_chain` 每家失败打 `[chain]` 日志。
+- 本地验证：life 单测 + `/chat` 路由端到端（状态注入、能量/thread 回写、日界不重复）+ smoke PASS。生产：cron 四 persona 全滚出当天状态；/chat 6-7s；临时置链首 deepseek 4.5s 正常出话；恢复链尾后 /health chain_ready=7。agnes 从 Worker 出口是 429/1015，仍在链尾。
+- 已知取舍：浏览器 localStorage 仍是活本，R2 是耐久备份；清 R2 后需在 App 里 Reset 才能清掉本地旧历史。
+- 未做（下一片）：沉默/不回应成为一等输出、投递节奏与能量耦合、平视分布指标。

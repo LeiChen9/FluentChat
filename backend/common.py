@@ -9,6 +9,7 @@ pusher Worker 里（web-push 库），Python 不碰。
 
 import asyncio
 import json
+from datetime import datetime, timedelta, timezone
 
 from workers import fetch as js_fetch
 
@@ -49,7 +50,8 @@ def input_tokens(messages: list[dict]) -> int:
 # 场景差异：社交媒体聊天不要求实时，链全挂就直接报错，恢复交给以后的重试层。
 # 没有流式（SSE 砍掉）、没有 tools、语音 /token 一条路不掺和。
 
-# 端点表：base_url / secret 名的唯一事实源。加一家只改这里 + MODEL_CHAIN 一行。
+# 端点表：base_url / secret 名 / 额外请求头的唯一事实源。
+# 加一家只改这里 + MODEL_CHAIN 一行。
 ENDPOINTS = {
     "agnes": {"base_url": "https://apihub.agnes-ai.com/v1/", "env": "AGNES_API_KEY"},
     "kilo": {"base_url": "https://ai-gateway.kilo.ai/api/v1/", "env": "KILO_API_KEY"},
@@ -57,6 +59,13 @@ ENDPOINTS = {
     "requesty": {"base_url": "https://router.requesty.ai/v1/", "env": "REQUESTY_API_KEY"},
     "openrouter": {"base_url": "https://openrouter.ai/api/v1/", "env": "OPENROUTER_API_KEY"},
     "groq": {"base_url": "https://api.groq.com/openai/v1/", "env": "GROQ_API_KEY"},
+    "opencode": {
+        "base_url": "https://opencode.ai/zen/go/v1/",
+        "env": "OPENCODE_API_KEY",
+        # zen 中转要求稳定 session 与自报 UA
+        "headers": {"User-Agent": "fluentchat/0.1",
+                    "x-opencode-session": "fluentchat"},
+    },
 }
 
 # Groq 免费层输入上限 8000 token/分钟，超了直接 413。按估算提前跳过。
@@ -64,9 +73,20 @@ ENDPOINTS = {
 # 放进去，高估只是提前跳过一个模型，不改变链的正确性。
 GROQ_MAX_INPUT_TOKENS = 7000
 
-# 模型链：照搬 argus 实测可用的条目，只留我们有 key 的端点。deepseek 不入链
-#（要 chinese_calendar 做时段闸门，成本不匹配）；gemini 也不入——唯一那把
-# Google key 是语音专用的（gemini_live_apiKey），不能拿来蹭文字账。
+# DeepSeek 只在非峰段入链：北京时间周一至周五 9-12、14-18 会被限流。
+DEEPSEEK_PEAK = frozenset(range(9, 12)) | frozenset(range(14, 18))
+
+
+def deepseek_open(now: datetime | None = None) -> bool:
+    now = now or datetime.now(timezone(timedelta(hours=8)))
+    if now.weekday() >= 5:
+        return True
+    return now.hour not in DEEPSEEK_PEAK
+
+
+# 模型链：照搬 argus 实测可用的条目，只留我们有 key 的端点。OpenCode zen 的
+# deepseek / glm 固定最后两档兜底；deepseek 只在非峰段入链（无节假日表，周末
+# 与工作日非峰段放行）。gemini 不入——唯一那把 key 是语音专用的。
 MODEL_CHAIN = [
     {"name": "minimax/minimax-m3.1-flash:free", "endpoint": "kilo"},
     {"name": "command-a-plus-05-2026", "endpoint": "cohere"},
@@ -82,6 +102,8 @@ MODEL_CHAIN = [
     {"name": "poolside/laguna-s-2.1:free", "endpoint": "kilo"},
     {"name": "qwen/qwen3.8-27b", "endpoint": "groq", "max_input_tokens": GROQ_MAX_INPUT_TOKENS},
     {"name": "nvidia/nemotron-3-super-120b-a12b:free", "endpoint": "kilo"},
+    {"name": "deepseek-v4.1-flash", "endpoint": "opencode", "gate": "off_peak"},
+    {"name": "glm-5.3-flash", "endpoint": "opencode"},
 ]
 
 
@@ -90,11 +112,11 @@ async def _chat_via(item: dict, messages: list[dict]) -> str:
     ep = ENDPOINTS[item["endpoint"]]
     url = ep["base_url"] + "chat/completions"
     payload = json.dumps({"model": item["name"], "messages": messages})
+    headers = {"Authorization": f"Bearer {env_key(ep['env'])}",
+               "Content-Type": "application/json"}
+    headers.update(ep.get("headers") or {})
     resp = await asyncio.wait_for(
-        js_fetch(url, method="POST",
-                 headers={"Authorization": f"Bearer {env_key(ep['env'])}",
-                          "Content-Type": "application/json"},
-                 body=payload),
+        js_fetch(url, method="POST", headers=headers, body=payload),
         timeout=20.0)
     if resp.status != 200:
         raise RuntimeError(f"HTTP {resp.status}: {(await resp.text())[:200]}")
@@ -111,6 +133,9 @@ async def run_chain(messages: list[dict]) -> dict:
         # 没配 key 的端点直接当不可用，不浪费一次 fetch
         if not env_key(ENDPOINTS[item["endpoint"]]["env"]):
             continue
+        if item.get("gate") == "off_peak" and not deepseek_open():
+            failures.append(f"{item['name']}: 峰段跳过")
+            continue
         limit = item.get("max_input_tokens")
         if limit and tokens > limit:
             failures.append(f"{item['name']}: 输入超限跳过")
@@ -124,6 +149,7 @@ async def run_chain(messages: list[dict]) -> dict:
         except Exception as e:
             last_err = e
             failures.append(f"{item['name']}: {type(e).__name__}: {str(e)[:120]}")
+            print(f"[chain] {item['name']} failed: {type(e).__name__}: {str(e)[:120]}")
     raise RuntimeError(f"所有模型均不可用: {last_err}｜经过: {'; '.join(failures)}")
 
 

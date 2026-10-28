@@ -26,8 +26,8 @@ VOICE_BY_ID = {
     "persona-Fiona": "Aoede", # Calm · 女
 }
 
-# 回复切分：AI 判断 user_mood / need 后，按每人的发消息习惯决定每泡最多几句。
-# short / medium / long 由 worker.reply_bucket() 决定；表里没有的 persona 用 2。
+# 回复切分：AI 给出自己此刻的 energy 后，按每人的发消息习惯决定每泡最多几句。
+# short / medium / long 由 worker.reply_bucket() 按 energy 决定；表里没有的 persona 用 2。
 SPLIT_CAPS = {
     "persona-leo": {"short": 1, "medium": 2, "long": 3},
     "persona-chole": {"short": 2, "medium": 2, "long": 3},

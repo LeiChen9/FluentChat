@@ -42,17 +42,29 @@
 
 ## Persona 文字聊天（IM 风格回复链）
 
-链路：浏览器 POST `/chat`（unit + history + directive）→ Worker `run_chain` 生成整段回复 → `split_reply` 再调一次快模型专职拆条 → 用 `\n` 接回 `content` → 前端 `keepLines` 留住换行 → `sliceReply` 按行拆泡 → `deliverParts` 逐条落，每条前摆 typing。
+链路：浏览器 POST `/chat`（unit + history + directive）→ Worker `to_messages`（媒介规则 + persona + 他此刻的生活 + 时间感 + 回复 schema）→ `run_chain` 生成 JSON → `split_reply` 本地按句切泡（energy 定档）→ 用 `\n` 接回 `content` → 前端 `keepLines` 留住换行 → `sliceReply` 按行拆泡 → `deliverParts` 逐条落，每条前摆 typing。
 
 设计约束（都踩过坑，改前先看）：
 
 - **换行就是发送键**。模型表达「这是两条消息」的唯一方式是换行，所以 `keepLines()` 只压内部空白、留住 `\n`。曾经的坑：`clean()` 的 `\s+ → " "` 把换行当垃圾抹掉，整条多气泡链因此失效。
-- **拆分是独立的第二次 LLM 调用**（`worker.py: split_reply` + `prompts/reply_splitter.md`，思路抄 MaiBot `src/chat/utils/llm_sentence_splitter.py`）。不让写回复的模型顺便分行——两个目标互相干扰，它必然倒向写完整内容。拆完做强校验：忽略空白后必须与原文逐字符一致，否则原样返回；`no_split`、解析失败、调用失败同样安全退化，绝不给前台塞坏数据。
-- **persona 只写性格，不写行为**。气泡长短由 `prompts/text_style.md` 的媒介物理决定：一个气泡是一个冲动、长度是让对方付的等待代价、细节是道具不是汇报清单、一条最多一个问题。性格只决定每个人的默认倾向。机械句数阈值已从 `contact.json` 撤掉（全 `null`），只留 160 字渲染兜底。
+- **拆分是本地纯文本操作**（`worker.py: split_reply`）：按句号/问号/省略号切句，再按 energy 档位合并成泡（Leo 1/2/3 句），最多 3 泡；只切不改字，JSON 解析失败按 medium 档处理原文，绝不给前台塞坏数据。
+- **persona 只写性格，不写行为**。气泡长短由 `prompts/text_style.md` 的媒介物理 + 当刻 energy 决定；细节是道具不是汇报清单；`life.render` 提供他此刻的生活，但「说不说」由相遇结果决定。性格只决定每个人的默认倾向。机械句数阈值已从 `contact.json` 撤掉（全 `null`），只留 160 字渲染兜底。
 - **风格靠演示和语料，不靠形容词**。prompt 里放了「一坨 vs 分行」的对比样例；更强的活人感要靠从真实聊天学句式（MaiBot 的 `expression_learner`），尚未做。
 - **节奏**：每条后续气泡等 `1.2-3s + clamp(本条字数×45ms, 1.2-9s)`。用户说话期间 NPC 说完当前这条再另起一轮（`beginReply` 排队 + `deliverReply` 完成回调补轮），不丢弃在途回复。
 - typing 指示器钉在消息流末尾，用户半路插话不会掉到它下面。
-- 改了 `site/` 必须 `wrangler deploy` 并戳 `index.html`/`app.js` 的 `?v=`，否则手机吃缓存。本机 `npx wrangler` 会因 npm 缓存目录 root 所有而失败，直接用 `~/.npm/_npx/*/node_modules/.bin/wrangler`。
+- 改了 `site/` 必须 `wrangler deploy` 并戳 `index.html`/`app.js` 的 `?v=`，否则手机吃缓存。本机 OAuth 配置在真实 home 下：`HOME=/Users/riceball npx wrangler deploy`（否则 wrangler 读被重定向的 home，找不到登录态）。
+
+## 自主时间线（persona 的一天）
+
+只靠 persona 写性格，模型每轮仍是「请求-响应」：输入里只有用户的话，于是只能提问或提供帮助。解法是给每个 persona 一条按钟表推进的自己的生活线，聊天变成两条线的相交。
+
+- **状态**：`{user}/life/{unit}.json`（`backend/life.py`）。`day`（日期 / 当天事件 / 尝试时间）、`energy`、`energy_at`、`threads`（开放线索）、`ledger`（近 12 条已用素材，防复读）、`digest`（关系摘要）。每人一份，和 `{user}/hist` 同一约定。
+- **日界**：cron 每 tick 先跑 `_life_sweep`，在线离线都推进。跨天且过 30 分钟重试冷却时，用 `prompts/day_plan.md` + persona + 真实日历 + 最近对话生成当天 events / energy / threads / digest；失败先记 attempted，不刷链。events 只写「他自己的生活」，聊天内容进 digest / threads。
+- **注入**：`/chat`、`/token`（语音）、`_proactive` 都读状态，`life.render()` 渲染成 `# Your life right now`，拼在 persona 之后、时间感之前；`/chat` 回复后把模型给的 `energy` / `thread` 写回。
+- **能量**：`settle()` 按 `contact.json` 的 hours 目标半衰漂移（active .68 / away .45 / busy .3 / offline .12），纯计算，不依赖写入。
+- **回复 schema**（`prompts/chat_json.md`）：`carry`（他带着什么进场）/ `hit`（这句话激起什么）/ `energy` / `thread` / `reply`。切泡档位由 energy 决定（<.4 short、<.7 medium、否则 long），不再判 user_mood / need。
+- **文字模型链**（`backend/common.py`）：OpenCode zen 的 `deepseek-v4.1-flash`（非峰段 gate）→ `glm-5.3-flash` 固定最后两档；deepseek 在北京时间周一至周五 9-12、14-18 跳过。每家失败打 `[chain]` 日志，`wrangler tail` 可直接看。
+- **已知取舍**：没有节假日表，deepseek 只按周末 / 峰段判断；浏览器 localStorage 仍是活本，R2 是耐久备份（本地非空时以本地为准）。
 
 ## Web Push（iOS 主屏幕 Web App）
 
@@ -62,7 +74,7 @@
 - VAPID 公私钥只配置在 pusher Worker；主 Worker 仅提供前端需要的 VAPID 公钥。服务端不公开测试发送或诊断接口。
 - `site/sw.js` 的 `push` 事件调用 `showNotification()` 显示系统通知；点击通知后聚焦 Web App 并尝试打开对应 persona 聊天。
 - 已在 iPhone 主屏幕 Web App 完成真实推送验证，锁屏状态可收到横幅。前台呈现和图标角标受 iOS 行为/API 支持限制，不等同于原生 LINE/WhatsApp。
-- 后台定时主动消息和聊天记录同步尚未实现；当前订阅/发送底座本身不会自动触发通知，需后续定义服务端数据与调度。
+- 后台定时主动消息（cron 离线代打）与聊天记录 R2 镜像已实现；离线代打命中时接 `_push` 发横幅。
 
 ## 已验证的协议细节
 
