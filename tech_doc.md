@@ -74,7 +74,7 @@
 - VAPID 公私钥只配置在 pusher Worker；主 Worker 仅提供前端需要的 VAPID 公钥。服务端不公开测试发送或诊断接口。
 - `site/sw.js` 的 `push` 事件调用 `showNotification()` 显示系统通知；点击通知后聚焦 Web App 并尝试打开对应 persona 聊天。
 - 已在 iPhone 主屏幕 Web App 完成真实推送验证，锁屏状态可收到横幅。前台呈现和图标角标受 iOS 行为/API 支持限制，不等同于原生 LINE/WhatsApp。
-- 后台定时主动消息（cron 离线代打）与聊天记录 R2 镜像已实现；离线代打命中时接 `_push` 发横幅。
+- **离线通知器（与主动/回复无关）**：`/chat` 生成后先把回复写进 `{user}/hist/{unit}.json`（浏览器随后 PUT 覆盖为同一份），人发完就关 App 也不丢消息。`state.notified[unit]` 是"最后已知 AI 消息"水位：在线 `PUT /hist` 的 `_note_seen` 推水位（看过的不补推）；cron 每 tick 对离线用户跑 `_push_sweep`，只要历史里有水位之后的新 AI 消息就推最新一条，然后推水位。`_proactive` 只落库、不再直接推送。
 
 ## 已验证的协议细节
 

@@ -28,7 +28,8 @@ from backend.common import (ENDPOINTS, _load_subs, _save_subs,
 from backend.prompt_data import PROMPTS
 from backend.time_context import DEFAULT_TZ_OFFSET, build_time_context, clamp_tz
 from backend.config import (AUTH_TOKENS_URL, HIST_MAX_CHARS, HIST_MAX_ITEMS,
-                            MODEL, PERSONAS, SPLIT_CAPS, UNITS, VOICE, VOICE_BY_ID)
+                            HIST_MAX_STORE, MODEL, PERSONAS, SPLIT_CAPS, UNITS,
+                            VOICE, VOICE_BY_ID)
 
 
 def to_messages(
@@ -176,6 +177,10 @@ async def _hist_route(env, user: str, request) -> Response:
         if not isinstance(hist, list):
             return Response.json({"error": "历史必须是数组"}, status=400)
         await env.DATA.put(key, json.dumps(hist, ensure_ascii=False))
+        try:
+            await _note_seen(env, user, unit, hist)
+        except Exception as e:
+            print(f"[push] seen {user}/{unit} failed: {type(e).__name__}: {e}")
         return Response.json({"ok": True})
 
     obj = await env.DATA.get(key)
@@ -381,6 +386,56 @@ async def _contact(env, unit: str) -> dict | None:
         return None
 
 
+async def _load_hist(env, user: str, unit: str) -> list:
+    obj = await env.DATA.get(f"{user}/hist/{unit}.json")
+    try:
+        hist = json.loads(await obj.text()) if obj is not None else []
+    except Exception:
+        hist = []
+    return hist if isinstance(hist, list) else []
+
+
+async def _save_hist(env, user: str, unit: str, hist: list) -> None:
+    await env.DATA.put(f"{user}/hist/{unit}.json",
+                       json.dumps(hist[-HIST_MAX_STORE:], ensure_ascii=False))
+
+
+def _seen_at(state: dict, unit: str) -> int:
+    seen = state.get("notified")
+    value = seen.get(unit) if isinstance(seen, dict) else None
+    return int(value) if isinstance(value, (int, float)) else 0
+
+
+def _mark_seen(state: dict, unit: str, t: int) -> None:
+    if not isinstance(state.get("notified"), dict):
+        state["notified"] = {}
+    if t > _seen_at(state, unit):
+        state["notified"][unit] = int(t)
+
+
+def _newest_ai_t(hist: list) -> int:
+    for item in reversed(hist):
+        if (item.get("who") == "ai" and not item.get("hidden")
+                and isinstance(item.get("t"), (int, float))):
+            return int(item["t"])
+    return 0
+
+
+async def _note_seen(env, user: str, unit: str, hist: list) -> None:
+    """在线时把水位推到最新 AI 消息：看过的不补推；离线交给 _push_sweep。"""
+    state = await cloud_npc.load_state(env, user)
+    seen = state.get("lastSeen")
+    now = cloud_npc.now_ms()
+    online = (isinstance(seen, (int, float)) and 0 < seen
+              and seen > now - cloud_npc.OFFLINE_MS)
+    if not online:
+        return
+    t = _newest_ai_t(hist)
+    if t > _seen_at(state, unit):
+        _mark_seen(state, unit, t)
+        await cloud_npc.save_state(env, user, state)
+
+
 class Default(WorkerEntrypoint):
     async def fetch(self, request):
         # 先绑定 env，链上取 key、读用户表全靠它
@@ -495,6 +550,16 @@ class Default(WorkerEntrypoint):
             except RuntimeError as e:
                 print(f"chat failure unit={unit}: {e}")
                 return Response.json({"error": str(e)}, status=502)
+            # 服务端先落回复：人发完就关 App，消息也不丢，离线通知器才有的可推
+            try:
+                if parts:
+                    t0 = cloud_npc.now_ms()
+                    hist = await _load_hist(self.env, user, unit)
+                    hist.extend({"who": "ai", "text": p, "t": t0 + i}
+                                for i, p in enumerate(parts))
+                    await _save_hist(self.env, user, unit, hist)
+            except Exception as e:
+                print(f"[hist] {user}/{unit} reply save failed: {type(e).__name__}: {e}")
             try:
                 await life.save(self.env, user, unit, life.apply_chat(lif, parsed, now))
             except Exception as e:
@@ -724,6 +789,7 @@ class Default(WorkerEntrypoint):
                 await self._proactive(env, user, unit, contact)
                 wrote.append(f"{user}/{unit}")
 
+            await self._push_sweep(env, user, now, state)
             await cloud_npc.save_state(env, user, {**state, "ledger": ledgers, "eng": eng})
         if offline:
             print(f"[cron] offline passed={'watch' if one_user is None else 'kick'}={offline} wrote={wrote}")
@@ -746,10 +812,7 @@ class Default(WorkerEntrypoint):
                     continue
                 lif = life.mark_attempt(lif, now_ms)
                 await life.save(env, user, unit, lif)
-                obj = await env.DATA.get(f"{user}/hist/{unit}.json")
-                hist = json.loads(await obj.text()) if obj is not None else []
-                if not isinstance(hist, list):
-                    hist = []
+                hist = await _load_hist(env, user, unit)
                 out = await run_chain(
                     life.day_messages(unit, contact, lif, sanitize_history(hist), now_ms))
                 day = life.parse_day(out.get("content") or "")
@@ -762,10 +825,7 @@ class Default(WorkerEntrypoint):
     # 别让半成品消息写进镜像。
     async def _proactive(self, env, user: str, unit: str, contact: dict) -> None:
         try:
-            obj = await env.DATA.get(f"{user}/hist/{unit}.json")
-            hist = json.loads(await obj.text()) if obj is not None else []
-            if not isinstance(hist, list):
-                hist = []
+            hist = await _load_hist(env, user, unit)
             now = cloud_npc.now_ms()
             lif = life.settle(await life.load(env, user, unit), contact, now)
             msgs = to_messages(unit, sanitize_history(hist), DEFAULT_TZ_OFFSET, lif, contact)
@@ -776,15 +836,36 @@ class Default(WorkerEntrypoint):
             return  # 名额已扣；下一天/下一 tick 再说
         if not parts:
             return
-        # 落库保全量（t 是云端合流的排序键，prompt 才用清洗版）
+        # 只落库：推送由 cron 的 _push_sweep 统一按「离线 + 水位」发
         t0 = cloud_npc.now_ms()
-        for i, part in enumerate(parts):
-            hist.append({"who": "ai", "text": part, "t": t0 + i})
-        await env.DATA.put(
-            f"{user}/hist/{unit}.json",
-            json.dumps(hist[-HIST_MAX_ITEMS:], ensure_ascii=False))
-        # 镜像落库后接横幅（片 3c）：正文照样在，横幅按本机 notif 偏好发送
-        await self._push(env, user, unit, contact, " ".join(parts))
+        hist.extend({"who": "ai", "text": part, "t": t0 + i}
+                    for i, part in enumerate(parts))
+        await _save_hist(env, user, unit, hist)
+
+    # 离线通知器：只认「离线 + 水位之后有新 AI 消息」，来源不分主动/回复。
+    # 在线时由 PUT /hist 的 _note_seen 推水位；这里只在离线轮跑。
+    async def _push_sweep(self, env, user: str, now: float, state: dict) -> None:
+        for unit in PERSONAS:
+            if not unit.startswith("persona-"):
+                continue
+            try:
+                hist = await _load_hist(env, user, unit)
+                newest = None
+                for item in reversed(hist):
+                    if (item.get("who") == "ai" and not item.get("hidden")
+                            and isinstance(item.get("t"), (int, float))):
+                        newest = item
+                        break
+                if newest is None:
+                    continue
+                t = int(newest["t"])
+                if t <= _seen_at(state, unit):
+                    continue
+                contact = await _contact(env, unit) or {}
+                await self._push(env, user, unit, contact, str(newest.get("text") or ""))
+                _mark_seen(state, unit, t)
+            except Exception as e:
+                print(f"[push] sweep {user}/{unit} failed: {type(e).__name__}: {str(e)[:120]}")
 
     # 把一条离线消息从系统横幅送出去（iOS 桌面 web app = 横幅，无图标角标）。
     # notif 三档：off 不发；ticker 只提示有消息；preview 带正文。失效订阅

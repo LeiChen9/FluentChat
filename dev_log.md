@@ -329,3 +329,10 @@ npx wrangler deploy                  # 改了 site/ 必须部署，workers.dev �
 - 本地验证：life 单测 + `/chat` 路由端到端（状态注入、能量/thread 回写、日界不重复）+ smoke PASS。生产：cron 四 persona 全滚出当天状态；/chat 6-7s；临时置链首 deepseek 4.5s 正常出话；恢复链尾后 /health chain_ready=7。agnes 从 Worker 出口是 429/1015，仍在链尾。
 - 已知取舍：浏览器 localStorage 仍是活本，R2 是耐久备份；清 R2 后需在 App 里 Reset 才能清掉本地旧历史。
 - 未做（下一片）：沉默/不回应成为一等输出、投递节奏与能量耦合、平视分布指标。
+
+## 离线通知器：只看新消息，不分主动/回复（2026-10-28）
+- `/chat` 生成后服务端先写 hist（t0+i），浏览器随后 PUT 覆盖为同一份；发完就关 App 回复不丢。
+- `state.notified[unit]` 水位：在线 `PUT /hist` → `_note_seen` 推水位（看过的不补推）；离线 cron `_push_sweep` 把水位之后的最新 AI 消息推一条，再推水位。
+- `_proactive` 不再直接 `_push`，只落库；推送统一由 `_push_sweep` 决定，来源无关。
+- `HIST_MAX_STORE=120` 作为 R2 历史存储上限（原来 cron 只留 30）。
+- 本地验证：/chat 落库、水位推进、离线推一次/在线不推、重复 sweep 不重推。

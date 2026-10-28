@@ -39,3 +39,5 @@ SPLIT_CAPS = {
 # 免得请求体膨胀（也防前端传一堆垃圾进来）。
 HIST_MAX_ITEMS = 30
 HIST_MAX_CHARS = 400
+# R2 历史镜像的存储上限（浏览器本地是 120，服务端落回复也按同一上限留）
+HIST_MAX_STORE = 120
