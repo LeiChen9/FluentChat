@@ -332,7 +332,9 @@ npx wrangler deploy                  # 改了 site/ 必须部署，workers.dev �
 
 ## 离线通知器：只看新消息，不分主动/回复（2026-10-28）
 - `/chat` 生成后服务端先写 hist（t0+i），浏览器随后 PUT 覆盖为同一份；发完就关 App 回复不丢。
-- `state.notified[unit]` 水位：在线 `PUT /hist` → `_note_seen` 推水位（看过的不补推）；离线 cron `_push_sweep` 把水位之后的最新 AI 消息推一条，再推水位。
-- `_proactive` 不再直接 `_push`，只落库；推送统一由 `_push_sweep` 决定，来源无关。
+- `state.lastAi[unit]` 记最新 AI 消息，`state.notified[unit]` 是已看/已推水位：在线 `PUT /hist` 的 `_note_ai` 推水位（看过的不补推）；离线只记 lastAi。
+- 两拍 cron：`* * * * *` 只跑 `_notify_sweep`（离线 + `lastAi > notified` 才读 hist 推送，来源不分主动/回复）；`*/5` 跑日界与主动代打，`_proactive` 只落库、不再直接推送。
+- 离开信号：`visibilitychange`/`pagehide` → `sendBeacon("/away")` 标 `awayAt`，回来 `/ping` 清除；`_offline()` = awayAt 或心跳过期（7 分钟兜底）。
+- 免费版预算：重活每 tick 只轮 `HEAVY_USERS_PER_TICK=3` 个用户；日界先判 needs_day 再拉 contact；`pick_proactive` 加 `slot_minutes` 保持每天期望条数；推送标题用 `NAMES` 静态表，不再拉 contact.json。
 - `HIST_MAX_STORE=120` 作为 R2 历史存储上限（原来 cron 只留 30）。
-- 本地验证：/chat 落库、水位推进、离线推一次/在线不推、重复 sweep 不重推。
+- 本地验证：/chat 落库、away/ping、lastAi/notified 水位、离线推一次/在线不推/重复 sweep 不重推；smoke PASS。

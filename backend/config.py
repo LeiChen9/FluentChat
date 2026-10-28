@@ -41,3 +41,15 @@ HIST_MAX_ITEMS = 30
 HIST_MAX_CHARS = 400
 # R2 历史镜像的存储上限（浏览器本地是 120，服务端落回复也按同一上限留）
 HIST_MAX_STORE = 120
+
+# 推送标题用静态名字：通知器不再为每个 unit 拉 contact.json（省子请求）
+NAMES = {
+    "persona-leo": "Leo",
+    "persona-chole": "Chole",
+    "persona-sam": "Sam",
+    "persona-Fiona": "Fiona",
+}
+
+# 免费版每次调用 50 子请求：5 分钟重活每 tick 只轮 3 个用户，
+# 其余用户由后面的 tick 轮转（日界/主动消息允许晚几分钟）。
+HEAVY_USERS_PER_TICK = 3

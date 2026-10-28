@@ -51,7 +51,8 @@ def minutes_left_cst(windows, now: float) -> int:
     return total
 
 
-def pick_proactive(contact: dict, led: dict, eng: float, now: float, force: bool = False) -> bool:
+def pick_proactive(contact: dict, led: dict, eng: float, now: float,
+                   force: bool = False, slot_minutes: int = 5) -> bool:
     """这一 tick 该不该开口。led 为该 persona 云册账本（缺= {"date", "sent"}），
     命中与否由调用方记账 —— 账本读写留编排层，这里纯判定。
 
@@ -87,7 +88,7 @@ def pick_proactive(contact: dict, led: dict, eng: float, now: float, force: bool
         return False
     if force:
         return True
-    slots = max(1, left // 5)
+    slots = max(1, left // max(1, int(slot_minutes)))
     return random.random() < min(1.0, rem / slots)
 
 

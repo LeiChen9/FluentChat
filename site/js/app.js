@@ -111,12 +111,29 @@ async function boot() {
 }
 
 // ── 心跳：页面开着每 3 分钟 /ping 一次报活 ──
-// cron 只会替「心跳断了 7 分钟」的用户代打 NPC 开口；心跳停了就归服务器。
+// 离开 App 用 /away beacon 立刻标记，回来 /ping 清除；心跳仍是兜底。
 function startHeartbeat() {
-  const beat = () => fetch("/ping", { method: "POST", keepalive: true }).catch(() => {});
+  // 页面在后台时不报活：否则会把 /away 刚标好的离线状态又清掉
+  const beat = () => {
+    if (document.visibilityState === "hidden") return;
+    fetch("/ping", { method: "POST", keepalive: true }).catch(() => {});
+  };
   beat();
   setInterval(beat, 3 * 60_000);
 }
+
+// ── 离开/回来信号：切后台、锁屏、关页都算「人不在」──
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") {
+    navigator.sendBeacon?.("/away");
+  } else {
+    fetch("/ping", { method: "POST", keepalive: true }).catch(() => {});
+  }
+});
+window.addEventListener("pagehide", () => { navigator.sendBeacon?.("/away"); });
+window.addEventListener("pageshow", () => {
+  fetch("/ping", { method: "POST", keepalive: true }).catch(() => {});
+});
 
 // ── Me 页个人资料：用户名 + 头像（点行 → 选图 → 压成 128px webp dataURL 上传）──
 function paintProfile(name) {

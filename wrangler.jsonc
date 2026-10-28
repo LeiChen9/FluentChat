@@ -35,10 +35,9 @@
     { "binding": "PUSHER", "service": "fluentchat-pusher" }
   ],
 
-  // 离线代打：每 5 分钟一期，先只给心跳断了 7 分钟以上的用户抽签；
-  // 消息写进 {user}/hist 镜像，推送通知（3c）之后接。
+  // 1 分钟：只跑离线通知器（新 AI 消息 → 横幅）；5 分钟：日界 + 主动代打。
   "triggers": {
-    "crons": ["*/5 * * * *"]
+    "crons": ["*/5 * * * *", "* * * * *"]
   },
 
   // 让 .md 进包。它们会以 JS text 模块形式存在，Python 的 open() 读不到，

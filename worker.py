@@ -27,9 +27,10 @@ from backend.common import (ENDPOINTS, _load_subs, _save_subs,
                             bind_worker_env, env_key, run_chain, vapid_pubkey)
 from backend.prompt_data import PROMPTS
 from backend.time_context import DEFAULT_TZ_OFFSET, build_time_context, clamp_tz
-from backend.config import (AUTH_TOKENS_URL, HIST_MAX_CHARS, HIST_MAX_ITEMS,
-                            HIST_MAX_STORE, MODEL, PERSONAS, SPLIT_CAPS, UNITS,
-                            VOICE, VOICE_BY_ID)
+from backend.config import (AUTH_TOKENS_URL, HEAVY_USERS_PER_TICK,
+                            HIST_MAX_CHARS, HIST_MAX_ITEMS, HIST_MAX_STORE,
+                            MODEL, NAMES, PERSONAS, SPLIT_CAPS, UNITS, VOICE,
+                            VOICE_BY_ID)
 
 
 def to_messages(
@@ -177,10 +178,12 @@ async def _hist_route(env, user: str, request) -> Response:
         if not isinstance(hist, list):
             return Response.json({"error": "历史必须是数组"}, status=400)
         await env.DATA.put(key, json.dumps(hist, ensure_ascii=False))
-        try:
-            await _note_seen(env, user, unit, hist)
-        except Exception as e:
-            print(f"[push] seen {user}/{unit} failed: {type(e).__name__}: {e}")
+        t = _newest_ai_t(hist)
+        if t:
+            try:
+                await _note_ai(env, user, unit, t)
+            except Exception as e:
+                print(f"[push] seen {user}/{unit} failed: {type(e).__name__}: {e}")
         return Response.json({"ok": True})
 
     obj = await env.DATA.get(key)
@@ -413,27 +416,69 @@ def _mark_seen(state: dict, unit: str, t: int) -> None:
         state["notified"][unit] = int(t)
 
 
-def _newest_ai_t(hist: list) -> int:
+def _last_ai(state: dict, unit: str) -> int:
+    last = state.get("lastAi")
+    value = last.get(unit) if isinstance(last, dict) else None
+    return int(value) if isinstance(value, (int, float)) else 0
+
+
+def _set_last_ai(state: dict, unit: str, t: int) -> bool:
+    if t <= _last_ai(state, unit):
+        return False
+    if not isinstance(state.get("lastAi"), dict):
+        state["lastAi"] = {}
+    state["lastAi"][unit] = int(t)
+    return True
+
+
+def _offline(state: dict, now_ms: float) -> bool:
+    """人不在 App 里：显式 away beacon，或心跳过期。"""
+    away = state.get("awayAt")
+    if isinstance(away, (int, float)) and away > 0:
+        return True
+    seen = state.get("lastSeen")
+    return not (isinstance(seen, (int, float)) and 0 < seen
+                and seen > now_ms - cloud_npc.OFFLINE_MS)
+
+
+def _newest_ai(hist: list) -> dict | None:
     for item in reversed(hist):
         if (item.get("who") == "ai" and not item.get("hidden")
                 and isinstance(item.get("t"), (int, float))):
-            return int(item["t"])
-    return 0
+            return item
+    return None
 
 
-async def _note_seen(env, user: str, unit: str, hist: list) -> None:
-    """在线时把水位推到最新 AI 消息：看过的不补推；离线交给 _push_sweep。"""
-    state = await cloud_npc.load_state(env, user)
-    seen = state.get("lastSeen")
-    now = cloud_npc.now_ms()
-    online = (isinstance(seen, (int, float)) and 0 < seen
-              and seen > now - cloud_npc.OFFLINE_MS)
-    if not online:
+def _newest_ai_t(hist: list) -> int:
+    item = _newest_ai(hist)
+    return int(item["t"]) if item else 0
+
+
+async def _note_ai(env, user: str, unit: str, t: int,
+                   mark_seen: bool | None = None) -> None:
+    """记下该 unit 最新 AI 消息。mark_seen=None 时按在线状态自动推水位；
+    离线只记 lastAi，留给 1 分钟通知器。"""
+    if not t:
         return
-    t = _newest_ai_t(hist)
-    if t > _seen_at(state, unit):
+    state = await cloud_npc.load_state(env, user)
+    changed = _set_last_ai(state, unit, t)
+    if mark_seen is None:
+        mark_seen = not _offline(state, cloud_npc.now_ms())
+    if mark_seen and t > _seen_at(state, unit):
         _mark_seen(state, unit, t)
+        changed = True
+    if changed:
         await cloud_npc.save_state(env, user, state)
+
+
+async def _load_users(env) -> dict:
+    try:
+        obj = await env.DATA.get("users.json")
+        users = json.loads(await obj.text()) if obj is not None else {}
+    except Exception as e:
+        print(f"[cron] users.json read failed: {type(e).__name__}: {e}")
+        users = {}
+    return users if isinstance(users, dict) else {}
 
 
 class Default(WorkerEntrypoint):
@@ -482,6 +527,17 @@ class Default(WorkerEntrypoint):
                 return Response.json({"error": "请先登录"}, status=401)
             state = await cloud_npc.load_state(self.env, user)
             state["lastSeen"] = cloud_npc.now_ms()
+            state.pop("awayAt", None)  # 人回来了
+            await cloud_npc.save_state(self.env, user, state)
+            return Response.json({"ok": True})
+
+        # 离开信号：visibilitychange/pagehide 用 sendBeacon 打一发，
+        # 不必等 7 分钟心跳过期；通知器下一拍就能按离线处理。
+        if request.method == "POST" and path.endswith("/away"):
+            if not user:
+                return Response.json({"error": "请先登录"}, status=401)
+            state = await cloud_npc.load_state(self.env, user)
+            state["awayAt"] = cloud_npc.now_ms()
             await cloud_npc.save_state(self.env, user, state)
             return Response.json({"ok": True})
 
@@ -558,6 +614,9 @@ class Default(WorkerEntrypoint):
                     hist.extend({"who": "ai", "text": p, "t": t0 + i}
                                 for i, p in enumerate(parts))
                     await _save_hist(self.env, user, unit, hist)
+                    # 只记 lastAi，不推水位：这条回复还没送到浏览器
+                    await _note_ai(self.env, user, unit, t0 + len(parts) - 1,
+                                   mark_seen=False)
             except Exception as e:
                 print(f"[hist] {user}/{unit} reply save failed: {type(e).__name__}: {e}")
             try:
@@ -723,34 +782,70 @@ class Default(WorkerEntrypoint):
     #   消息摆回本地一册。
     async def scheduled(self, controller, *rest):
         env = self.env
-        await self._cron_sweep(env, now=cloud_npc.now_ms() / 1000.0)
+        now = cloud_npc.now_ms() / 1000.0
+        # 1 分钟一拍只跑轻量通知器；5 分钟那拍跑日界/主动代打。
+        if getattr(controller, "cron", "") == "* * * * *":
+            await self._notify_sweep(env, now)
+        else:
+            await self._cron_sweep(env, now=now)
+
+    # 1 分钟通知器：只处理离线用户的新 AI 消息，来源不分主动/回复。
+    # 平时每人只读 1 个 state；只有 lastAi 超过水位才读 hist + 推送。
+    async def _notify_sweep(self, env, now: float) -> None:
+        bind_worker_env(env)
+        auth.bind_r2(env)
+        now_ms = now * 1000.0
+        users = await _load_users(env)
+        for user in users:
+            state = await cloud_npc.load_state(env, user)
+            if not _offline(state, now_ms):
+                continue
+            changed = False
+            for unit in PERSONAS:
+                if not unit.startswith("persona-"):
+                    continue
+                last = _last_ai(state, unit)
+                if last and last <= _seen_at(state, unit):
+                    continue
+                hist = await _load_hist(env, user, unit)
+                newest = _newest_ai(hist)
+                if newest is None:
+                    continue
+                t = int(newest["t"])
+                changed = _set_last_ai(state, unit, t) or changed
+                if t <= _seen_at(state, unit):
+                    continue
+                contact = {"name": NAMES.get(unit, unit)}
+                await self._push(env, user, unit, contact, str(newest.get("text") or ""))
+                _mark_seen(state, unit, t)
+                changed = True
+            if changed:
+                await cloud_npc.save_state(env, user, state)
 
     # 一轮 cron 的主体（scheduled 与自检路由共用）。逐离线用户抽签代打。
     async def _cron_sweep(self, env, now: float, one_user: str | None = None, force: bool = False) -> tuple[list, list]:
-        """one_user 传值 = 自检模式：只跑该用户、绕过心跳判定；正常轮跑全部离线用户。
+        """one_user 传值 = 自检模式：只跑该用户、绕过心跳判定；正常轮轮转
+        HEAVY_USERS_PER_TICK 个用户（免费版每次 50 子请求的上限）。
         force 穿透到底层抽签（仍守窗口与名额）。返回本轮真中签并写库的 user/unit。"""
         bind_worker_env(env)
         auth.bind_r2(env)
-        try:
-            obj = await env.DATA.get("users.json")
-            raw = await obj.text() if obj is not None else "{}"
-            users = json.loads(raw)
-        except Exception as e:
-            print(f"[cron] users.json read failed: {type(e).__name__}: {e}")
-            users = {}
-        if not isinstance(users, dict):
-            users = {}
+        users = await _load_users(env)
+
+        order = list(users)
+        if one_user is not None:
+            order = [u for u in order if u == one_user]
+            slot_minutes = 5
+        else:
+            if order:
+                k = int(now // 300) % len(order)
+                order = (order[k:] + order[:k])[:HEAVY_USERS_PER_TICK]
+            slot_minutes = 5 * max(1, -(-len(users) // HEAVY_USERS_PER_TICK))
 
         offline, wrote, diag = [], [], []
-        for user in users:
-            # 自检模式只跑指定用户；正常轮跑全部 —— 日界推进与在不在线无关
-            if one_user is not None and user != one_user:
-                continue
+        for user in order:
             await self._life_sweep(env, user, now)
             state = await cloud_npc.load_state(env, user)
-            seen = state.get("lastSeen")
-            if one_user is None and not (
-                    isinstance(seen, (int, float)) and 0 < seen < now * 1000 - cloud_npc.OFFLINE_MS):
+            if one_user is None and not _offline(state, now * 1000.0):
                 continue  # 心跳活着（在线）或从未登录 → 浏览器自己管
             offline.append(user)
             ledgers = state.get("ledger") if isinstance(state.get("ledger"), dict) else {}
@@ -774,7 +869,8 @@ class Default(WorkerEntrypoint):
                 e = eng.get(unit)
                 e = (e if isinstance(e, (int, float)) else cloud_npc.ENG_DEFAULT) * cloud_npc.ENG_DECAY
                 # 命中先记账：生成失败也不重抽（不浪费名额，同浏览器的重试语义）
-                hit = cloud_npc.pick_proactive(contact, led, e, now, force=force)
+                hit = cloud_npc.pick_proactive(contact, led, e, now, force=force,
+                                               slot_minutes=slot_minutes)
                 s = contact.get("proactive") or {}
                 left = cloud_npc.minutes_left_cst(s.get("windows"), now)
                 diag.append({"unit": unit, "left": left, "sent": int(led.get("sent") or 0),
@@ -786,10 +882,11 @@ class Default(WorkerEntrypoint):
                                  "lastAt": cloud_npc.now_ms()}
                 eng[unit] = e
                 hits += 1
-                await self._proactive(env, user, unit, contact)
+                t_last = await self._proactive(env, user, unit, contact)
+                if t_last:
+                    _set_last_ai(state, unit, t_last)
                 wrote.append(f"{user}/{unit}")
 
-            await self._push_sweep(env, user, now, state)
             await cloud_npc.save_state(env, user, {**state, "ledger": ledgers, "eng": eng})
         if offline:
             print(f"[cron] offline passed={'watch' if one_user is None else 'kick'}={offline} wrote={wrote}")
@@ -804,12 +901,13 @@ class Default(WorkerEntrypoint):
             if not unit.startswith("persona-"):
                 continue
             try:
+                lif = await life.load(env, user, unit)
+                if not life.needs_day(lif, now_ms):
+                    continue
                 contact = await _contact(env, unit)
                 if not isinstance(contact, dict):
                     continue
-                lif = life.settle(await life.load(env, user, unit), contact, now_ms)
-                if not life.needs_day(lif, now_ms):
-                    continue
+                lif = life.settle(lif, contact, now_ms)
                 lif = life.mark_attempt(lif, now_ms)
                 await life.save(env, user, unit, lif)
                 hist = await _load_hist(env, user, unit)
@@ -822,8 +920,8 @@ class Default(WorkerEntrypoint):
                 print(f"[life] {user}/{unit} day failed: {type(e).__name__}: {str(e)[:120]}")
 
     # 离线代打的生成与落库。链上任何一层失败就整个放弃本条：名额已扣，
-    # 别让半成品消息写进镜像。
-    async def _proactive(self, env, user: str, unit: str, contact: dict) -> None:
+    # 别让半成品消息写进镜像。返回最后一条的 t，供状态记 lastAi。
+    async def _proactive(self, env, user: str, unit: str, contact: dict) -> int | None:
         try:
             hist = await _load_hist(env, user, unit)
             now = cloud_npc.now_ms()
@@ -833,39 +931,15 @@ class Default(WorkerEntrypoint):
             out = await run_chain(msgs)
             parts = split_reply(unit, out.get("content", ""))
         except Exception:
-            return  # 名额已扣；下一天/下一 tick 再说
+            return None  # 名额已扣；下一天/下一 tick 再说
         if not parts:
-            return
-        # 只落库：推送由 cron 的 _push_sweep 统一按「离线 + 水位」发
+            return None
+        # 只落库：推送由 1 分钟通知器统一按「离线 + 水位」发
         t0 = cloud_npc.now_ms()
         hist.extend({"who": "ai", "text": part, "t": t0 + i}
                     for i, part in enumerate(parts))
         await _save_hist(env, user, unit, hist)
-
-    # 离线通知器：只认「离线 + 水位之后有新 AI 消息」，来源不分主动/回复。
-    # 在线时由 PUT /hist 的 _note_seen 推水位；这里只在离线轮跑。
-    async def _push_sweep(self, env, user: str, now: float, state: dict) -> None:
-        for unit in PERSONAS:
-            if not unit.startswith("persona-"):
-                continue
-            try:
-                hist = await _load_hist(env, user, unit)
-                newest = None
-                for item in reversed(hist):
-                    if (item.get("who") == "ai" and not item.get("hidden")
-                            and isinstance(item.get("t"), (int, float))):
-                        newest = item
-                        break
-                if newest is None:
-                    continue
-                t = int(newest["t"])
-                if t <= _seen_at(state, unit):
-                    continue
-                contact = await _contact(env, unit) or {}
-                await self._push(env, user, unit, contact, str(newest.get("text") or ""))
-                _mark_seen(state, unit, t)
-            except Exception as e:
-                print(f"[push] sweep {user}/{unit} failed: {type(e).__name__}: {str(e)[:120]}")
+        return t0 + len(parts) - 1
 
     # 把一条离线消息从系统横幅送出去（iOS 桌面 web app = 横幅，无图标角标）。
     # notif 三档：off 不发；ticker 只提示有消息；preview 带正文。失效订阅

@@ -73,6 +73,7 @@ globalThis.document = {
   createElement: (t) => mkEl("", t),
   querySelector: (s) => (s === ".tabbar" ? mkEl("", "nav") : mkEl()),
   querySelectorAll: (s) => (s === ".tab" ? tabs : []),
+  addEventListener() {},
 };
 class AC {
   constructor() { this.state = "running"; this.currentTime = 0; this.destination = {}; }
@@ -83,7 +84,7 @@ class AC {
   createMediaStreamSource() { return { connect() {}, disconnect() {} }; }
   createScriptProcessor() { return { connect() {}, disconnect() {}, onaudioprocess: null }; }
 }
-globalThis.window = { AudioContext: AC };
+globalThis.window = { AudioContext: AC, addEventListener() {} };
 const WSS = [];
 globalThis.WebSocket = class {
   static OPEN = 1;
