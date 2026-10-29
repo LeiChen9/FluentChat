@@ -606,13 +606,14 @@ class Default(WorkerEntrypoint):
             except RuntimeError as e:
                 print(f"chat failure unit={unit}: {e}")
                 return Response.json({"error": str(e)}, status=502)
-            # 服务端先落回复：人发完就关 App，消息也不丢，离线通知器才有的可推
+            # 这组 t 是消息的正式身份：随 parts 原样回给前端，发泡/落盘签同一个 t，
+            # 服务端预写与客户端落盘对同一条消息产出同一条镜像记录（合流按 who|text|t 判重）
+            t0 = cloud_npc.now_ms() if parts else 0
+            out["parts"] = [{"text": p, "t": t0 + i} for i, p in enumerate(parts)]
             try:
                 if parts:
-                    t0 = cloud_npc.now_ms()
                     hist = await _load_hist(self.env, user, unit)
-                    hist.extend({"who": "ai", "text": p, "t": t0 + i}
-                                for i, p in enumerate(parts))
+                    hist.extend({"who": "ai", "pending": True, **q} for q in out["parts"])
                     await _save_hist(self.env, user, unit, hist)
                     # 只记 lastAi，不推水位：这条回复还没送到浏览器
                     await _note_ai(self.env, user, unit, t0 + len(parts) - 1,

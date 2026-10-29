@@ -74,9 +74,10 @@
 - VAPID 公私钥只配置在 pusher Worker；主 Worker 仅提供前端需要的 VAPID 公钥。服务端不公开测试发送或诊断接口。
 - `site/sw.js` 的 `push` 事件调用 `showNotification()` 显示系统通知；点击通知后聚焦 Web App 并尝试打开对应 persona 聊天。
 - 已在 iPhone 主屏幕 Web App 完成真实推送验证，锁屏状态可收到横幅。前台呈现和图标角标受 iOS 行为/API 支持限制，不等同于原生 LINE/WhatsApp。
-- **离线通知器（与主动/回复无关）**：`/chat` 生成后先把回复写进 `{user}/hist/{unit}.json`（浏览器随后 PUT 覆盖为同一份），人发完就关 App 也不丢消息。`state.lastAi[unit]` 记最新 AI 消息时间，`state.notified[unit]` 是已看/已推水位；在线 `PUT /hist` 的 `_note_ai` 推水位（看过的不补推）。
+- **离线通知器（与主动/回复无关）**：`/chat` 生成后先把回复**带 `pending:true`** 写进 `{user}/hist/{unit}.json`（服务端先落，人发完就关 App 也不丢消息），同一组 `t0+i` 随响应 `parts` 回给前端——前端发泡/离线代打落盘签的就是这组 t，两个写入口对同一条消息产出同一条镜像记录。`state.lastAi[unit]` 记最新 AI 消息时间，`state.notified[unit]` 是已看/已推水位；在线 `PUT /hist` 的 `_note_ai` 推水位（看过的不补推）。
 - **两拍 cron**：`* * * * *` 只跑 `_notify_sweep`（离线 + `lastAi > notified` 才读 hist 推送，来源不分主动/回复）；`*/5 * * * *` 跑日界与主动代打，每 tick 只轮 `HEAVY_USERS_PER_TICK` 个用户并给日界预算，压在免费版 50 子请求/次以内。`_proactive` 只落库、不再直接推送。
 - **离开信号**：`visibilitychange`/`pagehide` 用 `sendBeacon("/away")` 标 `state.awayAt`，回来 `/ping` 清除；心跳 7 分钟仍是兜底。典型延迟 1 分钟内，beacon 失败最坏约 8 分钟。
+- **合流护栏（防重开竞态双重发）**：`pending:true` 行只有「还没送到任何设备」语义——本机同一回复在途（节奏延迟可达分钟级）时开页合流**跳过** pending 行，交给节奏机自己送；无在途时收下并清标（收下即送达），镜像滞留的 pending 行靠 `who|text|t` 同 key 判重，幂等。
 
 ## 已验证的协议细节
 

@@ -338,3 +338,12 @@ npx wrangler deploy                  # 改了 site/ 必须部署，workers.dev �
 - 免费版预算：重活每 tick 只轮 `HEAVY_USERS_PER_TICK=3` 个用户；日界先判 needs_day 再拉 contact；`pick_proactive` 加 `slot_minutes` 保持每天期望条数；推送标题用 `NAMES` 静态表，不再拉 contact.json。
 - `HIST_MAX_STORE=120` 作为 R2 历史存储上限（原来 cron 只留 30）。
 - 本地验证：/chat 落库、away/ping、lastAi/notified 水位、离线推一次/在线不推/重复 sweep 不重推；smoke PASS。
+
+## 消息身份 + pending 合流护栏（2026-10-29）
+
+- 事故：Leo 的回复原样重发一遍。链路是——`/chat` 服务端生成后先预写进 R2 镜像（t0 盖章），前端还在节奏延迟（本案 72s）中；空窗里重开聊天页，合流按 `who|text|t` 拉镜像当「离线未读」插屏；延迟到点节奏机又把同一份按 `Date.now()` 章发第二遍。两个盖章点两张时钟，合流永远判不重。
+- Tier 1（消息身份）：预写时的 `t0+i` 升格为消息正式身份，随响应新增 `parts:[{text,t}]` 原样带回；live.js 全链（deliverParts / deliverProactive 离线代打）不再 `Date.now()`，签服务器 t。服务端预写与客户端落盘自此同一条记录，合流判重自动生效。响应无 parts（旧服务器）退回 Date.now()，兼容灰度。
+- Tier 1b（合流护栏）：预写行带 `pending:true` = 「还没送到任何设备」。本机同一回复在途时开页合流跳过 pending 行（自有节奏机送达）；无在途收下并清标；prewarmHist 整包落盘同样清标。镜像滞留 pending 行靠同 key 判重幂等。
+- 顺手收尾：`hist.extend` 改 `**q` 展开、flushPending 单泡特判并入 deliverParts（单泡=立即直落等价）、deliverReply 去掉二次 keepLines。
+- smoke.mjs 增补回复链回归段：/chat 桩（每次回复换一组服务器 t）+ 可变镜像桩；断言落盘 t==服务器 t、与预写行同 key 判重、在途重开不插屏、离线 pending 行收下清标、重复合流不重复。
+- 本地验证：smoke 全口径 PASS；生产重放事故链（R2 镜像至 1793240418388）确认双盖章形状。已知限界：合流去重仍以「文案+服务器 t」为身份，撤回/多端一致性等一等公民身份（mid/ACK）另片。

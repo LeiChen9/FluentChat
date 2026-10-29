@@ -331,7 +331,6 @@ export function initChat({ show, back, openCall }) {
       }
       const parts = sliceReply(text, unit?.maxSentences).filter((t) => t);
       if (!parts.length) return;
-      if (parts.length === 1) { addBubble("ai", parts[0]); pushHist({ who: "ai", text: parts[0], t: Date.now() }); return; }
       deliverParts(parts);
     }
   }
@@ -343,7 +342,7 @@ export function initChat({ show, back, openCall }) {
     hideTyping();
   }
 
-  function deliverParts(parts, done) {
+  function deliverParts(parts, done, ts) {
     const state = { timer: 0 };
     delivery = state;
     let i = 0;
@@ -355,7 +354,7 @@ export function initChat({ show, back, openCall }) {
         if (delivery !== state) return;
         hideTyping();
         addBubble("ai", parts[i]);
-        pushHist({ who: "ai", text: parts[i++], t: Date.now() });
+        pushHist({ t: ts?.[i] ?? Date.now(), who: "ai", text: parts[i++] });
         drip();
       };
       if (!i) sendPart();
@@ -423,9 +422,9 @@ export function initChat({ show, back, openCall }) {
   function startGen(u, st) {
     if (st.gen || st.ready) return;
     st.used = st.texts.length; // 这次生成带上的是几条发言（packFor 读 localStorage）
-    st.gen = genChat(u, st.req).then((text) => {
+    st.gen = genChat(u, st.req).then((ret) => {
       if (st.cancelled) return;
-      st.gen = null; st.text = text; st.ready = true;
+      st.gen = null; st.text = ret.text; st.ts = ret.ts; st.ready = true;
       if (!st.delay && !st.wait) proceedReply(u);
     }, () => { // 生成失败不当场放弃：队列还在，缓 8-30 秒按原节奏重试
       st.gen = null;
@@ -453,10 +452,10 @@ export function initChat({ show, back, openCall }) {
 
   // 文案就绪落气泡：开着本对话按节奏逐条出（多条间再摆 typing），没开着走后台路径
   function deliverReply(u, st) {
-    const text = keepLines(st.text);
+    const text = st.text; // genChat 落库前已 keepLines：换行要留住
     replies.delete(u.id);
     if (!text) return;
-    if (unit !== u || mode !== "text") { deliverProactive(u, text); return; }
+    if (unit !== u || mode !== "text") { deliverProactive(u, text, st.ts); return; }
     lastAiAt = Date.now(); // 回话落地 = 话题正热的参照点
     if (st.req !== BURST_REQ) burstArmed += burstOf(u).extra; // 补话的回话别给自己续弹药
     const parts = sliceReply(text, u.maxSentences).filter(Boolean);
@@ -466,7 +465,7 @@ export function initChat({ show, back, openCall }) {
         const extra = st.texts.length - st.used;
         if (extra > 0) { const st2 = beginReply(u); for (let k = 0; k < extra; k++) st2.texts.push(""); }
         examBurst(u);
-    });
+    }, st.ts);
   }
 
   // 拆掉某人的在途回复（Reset 清历史时用）：定时器全清，状态退场
@@ -534,15 +533,15 @@ export function initChat({ show, back, openCall }) {
     proEpoch.set(p.id, epoch);
     proBusy.add(p.id);
     noteReply(p, new Date()); // 想开口先升 active
-    let text = "";
+    let ret = null;
     try {
-      text = await genProactive(p, retried, epoch); // genChat 已 keepLines：换行要留住
+      ret = await genProactive(p, retried, epoch); // genChat 已 keepLines：换行要留住
     } finally {
       proBusy.delete(p.id);
     }
     // 生成期间用户开口了：这份旧上下文作废
-    if (!text || proEpoch.get(p.id) !== epoch || replies.has(p.id)) return;
-    deliverProactive(p, text);
+    if (!ret || !ret.text || proEpoch.get(p.id) !== epoch || replies.has(p.id)) return;
+    deliverProactive(p, ret.text, ret.ts);
   }
 
   // 一发 /chat：本地历史（含刚排队的话）+ 可选指令，模型容灾链给整段回复
@@ -561,14 +560,14 @@ export function initChat({ show, back, openCall }) {
     if (!res.ok || !data.content) throw new Error(data.error || `HTTP ${res.status}`);
     const text = keepLines(data.content);
     if (!text) throw new Error("blank reply");
-    return text;
+    return { text, ts: (data.parts || []).map((q) => q.t) };
   }
 
   async function genProactive(p, retried, epoch) {
     try {
-      const text = await genChat(p, PRO_REQ);
+      const ret = await genChat(p, PRO_REQ);
       proFail.delete(p.id);
-      return text;
+      return ret;
     } catch (e) {
       console.warn("proactive:", e);
       // 用户这期间已经开口的话，这次失败不再安排重试
@@ -589,16 +588,16 @@ export function initChat({ show, back, openCall }) {
   }
 
   // 落地：开着本对话就在页里出气泡进记忆；没开着只落盘 + 刷列表预览。
-  function deliverProactive(p, text) {
+  function deliverProactive(p, text, ts) {
     const parts = sliceReply(text);
     if (unit === p && mode === "text") {
       noteReply(p, new Date()); // 正式开口，再锁一次 glow
-      deliverParts(parts, () => { lastAiAt = Date.now(); }); // 逐条出，配真人打字速度
+      deliverParts(parts, () => { lastAiAt = Date.now(); }, ts); // 逐条出，配真人打字速度
       return;
     }
     // 对话页没开：写进本地历史，回页时自然渲染；列表预览提个醒+置顶
     const arr = loadHist(p.id);
-    for (const t of parts) arr.push({ who: "ai", text: t, t: Date.now() });
+    for (const t of parts) arr.push({ who: "ai", text: t, t: ts?.shift() ?? Date.now() });
     const KEEP = arr.slice(-HIST_MAX);
     try { localStorage.setItem(HIST_KEY + p.id, JSON.stringify(KEEP)); } catch {}
     mirrorHist(p.id);
@@ -646,8 +645,9 @@ export function initChat({ show, back, openCall }) {
         const seen = new Set(loadHist(p.id).map(key));
         const news = arr.filter((c) => c && c.who === "ai" && !c.hidden && !seen.has(key(c)));
         let last = null;
-        if (!seen.size) { // 本机没历史：整包落盘，老消息不算未读
-          try { localStorage.setItem(HIST_KEY + p.id, JSON.stringify(arr.slice(-HIST_MAX))); } catch {}
+        if (!seen.size) { // 本机没历史：整包落盘（预写行顺手清标），老消息不算未读
+          const seed = arr.slice(-HIST_MAX).map((c) => c.pending ? { ...c, pending: false } : c);
+          try { localStorage.setItem(HIST_KEY + p.id, JSON.stringify(seed)); } catch {}
           last = arr.filter((h) => !h.hidden && (h.who === "me" || h.who === "ai")).at(-1);
         } else if (news.length) { // 本机有历史：云端多出的 ai 消息 = 离线未读
           unread.set(p.id, (unread.get(p.id) || 0) + news.length);
@@ -945,7 +945,10 @@ export function initChat({ show, back, openCall }) {
       if (!arr && !hist.length) setChatState("History is reconnecting…");
       if (arr && arr.length) {
         const seen = new Set(hist.map(key));
-        const extra = arr.filter((c) => c && (c.who || c.kind === "call") && !seen.has(key(c)));
+        // pending = 服务端预写、还没送到任何设备。本机在途有同一回复，让节奏机自己送；
+        // 别的设备收下顺手清标（收下即已送达）
+        const extra = arr.filter((c) => c && (c.who || c.kind === "call") && !seen.has(key(c))
+          && !(c.pending && replies.has(u.id))).map((c) => c.pending ? { ...c, pending: false } : c);
         if (extra.length) {
           hist = [...hist, ...extra].sort((a, b) => (a.t ?? 0) - (b.t ?? 0)).slice(-HIST_MAX);
           try { localStorage.setItem(HIST_KEY + u.id, JSON.stringify(hist)); } catch {}
