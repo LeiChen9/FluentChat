@@ -85,9 +85,11 @@ def deepseek_open(now: datetime | None = None) -> bool:
 
 
 # 模型链：照搬 argus 实测可用的条目，只留我们有 key 的端点。OpenCode zen 的
-# deepseek / glm 固定最后两档兜底；deepseek 只在非峰段入链（无节假日表，周末
+# deepseek / glm 固定打头；deepseek 只在非峰段入链（无节假日表，周末
 # 与工作日非峰段放行）。gemini 不入——唯一那把 key 是语音专用的。
 MODEL_CHAIN = [
+    {"name": "deepseek-v4.1-flash", "endpoint": "opencode", "gate": "off_peak"},
+    {"name": "glm-5.3-flash", "endpoint": "opencode"},
     {"name": "minimax/minimax-m3.1-flash:free", "endpoint": "kilo"},
     {"name": "command-a-plus-05-2026", "endpoint": "cohere"},
     {"name": "command-a-reasoning-08-2025", "endpoint": "cohere"},
@@ -102,8 +104,6 @@ MODEL_CHAIN = [
     {"name": "poolside/laguna-s-2.1:free", "endpoint": "kilo"},
     {"name": "qwen/qwen3.8-27b", "endpoint": "groq", "max_input_tokens": GROQ_MAX_INPUT_TOKENS},
     {"name": "nvidia/nemotron-3-super-120b-a12b:free", "endpoint": "kilo"},
-    {"name": "deepseek-v4.1-flash", "endpoint": "opencode", "gate": "off_peak"},
-    {"name": "glm-5.3-flash", "endpoint": "opencode"},
 ]
 
 
