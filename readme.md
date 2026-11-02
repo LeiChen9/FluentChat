@@ -70,6 +70,10 @@
 | 11 | The Reason | 说清工作决定的原因 |
 | 12 | What to Improve | 聊哪里不足、怎么提升 |
 
+## Practice 练习房间
+
+底部 `Practice` tab 由 Fiona 主持，把 12 个 Unit 当作 5 分钟场景卡；点卡片直接发起练习通话，挂断后生成通话点评。Chats 里的朋友仍然不教学，训练只发生在练习房间。
+
 ## Prompt 目录
 
-`prompts/` 按 chapter 分目录：`base.md` 是 Ch1 通用规则，`base-ch2.md` 是 Ch2 表达篇通用规则（流利优先、A2-B1、鼓励完整句），`ch1-survival/`、`ch2-expression/` 各放本阶段的单元 prompt。`worker.py` 按单元号选对应 base，`tools/gen_prompts.py` 递归收集全部 md 并注入 `worker.py`。
+`prompts/` 按 chapter 分目录：`base.md` 是 Ch1 通用规则，`base-ch2.md` 是 Ch2 表达篇通用规则（流利优先、A2-B1、鼓励完整句），`practice_room.md` 是 Fiona 练习房间的教师规则覆盖层，`ch1-survival/`、`ch2-expression/` 各放本阶段的单元 prompt。`worker.py` 按单元号选对应 base，`tools/gen_prompts.py` 递归收集全部 md 并注入 `worker.py`。

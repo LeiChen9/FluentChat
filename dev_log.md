@@ -359,3 +359,11 @@ npx wrangler deploy                  # 改了 site/ 必须部署，workers.dev �
 - 顺手：`_load_hist` 收拢为 fail-soft 空册（调用方不再各自设防）；`_ai_rows` 合并三处重复扫描；`_touch_device` 合并 ping/away 台账逻辑；砍 count 回包与遗留字段双写。
 - 验证：worker 逻辑单测（发送门/接管/合并/presence 二十余断言）+ tools/smoke.mjs 全口径 PASS + py_compile/node --check。
 - 已知残留：可见页心跳恰欠的那一瞬（弱网）双抽理论上仍可碰头，彻底根除需共享额度台账，另片。
+
+## Practice 练习房间 + tabbar 修复（2026-11-02）
+
+- 新增第 5 个 tab `Practice`，Fiona 当老师；12 个 Unit 场景卡由 `backend/units.py` + `GET /practice/plan` 提供，按 Ch1 / Ch2 分组。
+- 练习通话：点卡 → `openPractice` → `/token` 带 `practice:true`；服务端清空普通聊天历史，prompt = base + `practice_room` + unit，音色固定 Aoede；`/call-review` 接受 `unit-XX`，通话记录标 `Practice call`。
+- 清理：删 `pendingPractice` 状态、`practice.js` 的 loading/finally/JSON 兜底、重复 history 分支；`.view` 改为内部滚动，tabbar 固定。
+- 验证：`tools/smoke.mjs` 覆盖场景卡渲染、练习卡发起 `/token(practice)`、通话浮层；`node --check`、`py_compile` 通过。部署 Version `e5c8cb6e`。
+- 未接：语音配额计量、`learn.json` 进度、练习完成率。

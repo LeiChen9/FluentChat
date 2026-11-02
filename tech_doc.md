@@ -66,6 +66,16 @@
 - **文字模型链**（`backend/common.py`）：OpenCode zen 的 `deepseek-v4.1-flash`（非峰段 gate）→ `glm-5.3-flash` 固定最后两档；deepseek 在北京时间周一至周五 9-12、14-18 跳过。每家失败打 `[chain]` 日志，`wrangler tail` 可直接看。
 - **已知取舍**：没有节假日表，deepseek 只按周末 / 峰段判断；浏览器 localStorage 仍是活本，R2 是耐久备份（本地非空时以本地为准）。
 
+## Practice 练习房间（2026-11-02）
+
+- **入口**：底部第 5 个 tab `Practice`，Fiona 是老师；Chats 里其他三人仍是纯朋友。Unit 只做场景卡，不加联系人。
+- **场景数据**：`backend/units.py` 是 12 个 Unit 的元数据真源；`GET /practice/plan` 返回 `units`，前端按 survival / expression 分组渲染。
+- **发起**：点场景卡 → `openPractice(Fiona, unit-XX)` → 立即拨练习电话；通话记录带 `practice:true`，Chat 里显示 `Practice call`。
+- **服务端**：`POST /token` 带 `practice:true` 时只接受 `unit-XX`；清空普通聊天历史，prompt = `base.md`/`base-ch2.md` + `prompts/practice_room.md` + unit 话题；音色固定 Fiona 的 Aoede。
+- **复盘**：挂断后仍走 `prompts/call_review.md`；`/call-review` 现在同时接受 persona 和 `unit-XX`。
+- **边界**：普通聊天继续用 persona + `text_style.md`，不纠错；练习房间才允许老师规则，两套 prompt 不混写。
+- **未接**：语音配额计量、`learn.json` 进度、练习完成率。
+
 ## Web Push（iOS 主屏幕 Web App）
 
 - 用户需在 iOS 16.4+ 的 Safari 中分享网站并选择“添加到主屏幕”，再从主屏幕打开 Web App 并主动授权通知；普通 Safari 标签页不支持此推送流程。
