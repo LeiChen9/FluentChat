@@ -21,6 +21,6 @@ self.addEventListener("notificationclick", (e) => {
       if (unit) c.postMessage({ kind: "open-chat", unit });
       return;
     }
-    await self.clients.openWindow("/");
+    await self.clients.openWindow(unit ? `/?unit=${encodeURIComponent(unit)}` : "/");
   })());
 });

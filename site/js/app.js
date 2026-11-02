@@ -209,8 +209,25 @@ async function setupProfileUI() {
     location.reload();
   });
 }
-boot();
+boot().then(openFromPush);
 setupProfileUI();
+
+// 冷启动点通知：SW 带 ?unit= 打开，等联系人就绪后直接进对话
+function openFromPush() {
+  const unit = typeof location !== "undefined" && new URLSearchParams(location.search).get("unit");
+  if (!unit) return;
+  let tries = 0;
+  const tryOpen = () => {
+    const p = findPersona && findPersona(unit);
+    if (p) {
+      history.replaceState(null, "", "/");
+      chat.open(p);
+      return;
+    }
+    if (++tries < 50) setTimeout(tryOpen, 200);
+  };
+  tryOpen();
+}
 
 function loadPeople() {
   const build = (people) => {
