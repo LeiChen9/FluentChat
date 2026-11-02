@@ -516,20 +516,21 @@ def _ai_rows(hist: list) -> list[dict]:
             and isinstance(i.get("t"), (int, float)))]
 
 
-def _newest_ai(hist: list, now_ms: float = 0) -> dict | None:
+def _newest_ai(hist: list, now_ms: float = 0, offline: bool = False) -> dict | None:
     """最新一条已送达的 AI 消息。now_ms 传值 = 允许超时接管 pending 行
     （推送轨用），不传 = 只认表演端真送出的行（已读用）。
 
     门只看批尾一条：最新行不是 pending 就直认；门后要退，退到最新
-    delivered —— 别让更老的尾巴 pending 盖住它之后的正式行。"""
+    delivered —— 别让更老的尾巴 pending 盖住它之后的正式行。
+    offline=True 用于离线 sweep：没有表演端在途，pending 立即可推。"""
     rows = _ai_rows(hist)
     if not rows:
         return None
     newest = rows[0]
     if not newest.get("pending"):
         return newest
-    if now_ms and int(newest["t"]) < now_ms - PENDING_TAKEOVER_MS:
-        return newest  # 批尾 pending 已过接管线：表演端已死，接管
+    if offline or (now_ms and int(newest["t"]) < now_ms - PENDING_TAKEOVER_MS):
+        return newest  # 离线无表演端，或批尾 pending 已过接管线：接管
     return next((i for i in rows[1:] if not i.get("pending")), None)
 
 
@@ -930,7 +931,7 @@ class Default(WorkerEntrypoint):
                 if last and last <= _seen_at(state, unit):
                     continue
                 hist = await _load_hist(env, user, unit)
-                newest = _newest_ai(hist, now_ms)
+                newest = _newest_ai(hist, now_ms, offline=True)
                 if newest is None:
                     continue
                 t = int(newest["t"])

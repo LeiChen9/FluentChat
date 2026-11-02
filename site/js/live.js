@@ -104,6 +104,28 @@ export function initChat({ show, back, openCall }) {
   let burstTimer = 0;    // 补话定时器
   let statusTimer = 0;   // 状态栏 / 苏醒检查的轮询
   let lastAiAt = 0;      // AI 上一轮回话落地的时刻；之后不久的追问 = 话题正热
+  let wasHidden = false; // 切走过再回来：在途回复直接落完，不再表演打字
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") { wasHidden = true; return; }
+    if (!wasHidden) return;
+    wasHidden = false;
+    flushDelivery();
+    for (const st of replies.values()) st.batch = true;
+    if (!unit) return;
+    const st = replies.get(unit.id);
+    if (st) {
+      if (st.delay) { clearTimeout(st.delay); st.delay = 0; }
+      if (st.wait) { clearTimeout(st.wait); st.wait = 0; }
+      if (st.ready) deliverReply(unit, st, true);
+    }
+    const last = [...hist].reverse().find((i) => i.who === "ai" && i.t);
+    if (last) fetch("/hist/seen", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ unit: unit.id, t: last.t }),
+    }).catch(() => {});
+  });
 
   // 通话记录：接通后全程攒这里，挂断时落本机账本 + 一条时长系统行。
   let callRec = null;
@@ -342,14 +364,14 @@ export function initChat({ show, back, openCall }) {
     hideTyping();
   }
 
-  function deliverParts(parts, done, ts) {
-    const state = { timer: 0 };
+  function deliverParts(parts, done, ts, batch = false) {
+    const state = { timer: 0, batch };
     delivery = state;
     let i = 0;
     const drip = () => {
       if (delivery !== state) return;
       if (i >= parts.length) { delivery = null; hideTyping(); done?.(); return; }
-      if (i > 0) showTyping();
+      if (i > 0 && !state.batch) showTyping();
       const sendPart = () => {
         if (delivery !== state) return;
         hideTyping();
@@ -357,13 +379,23 @@ export function initChat({ show, back, openCall }) {
         pushHist({ t: ts?.[i] ?? Date.now(), who: "ai", text: parts[i++] });
         drip();
       };
-      if (!i) sendPart();
+      if (!i || state.batch) sendPart();
       else {
         const think = Math.min(Math.max(parts[i].length * THINK_MS, THINK_MIN), THINK_MAX);
         state.timer = setTimeout(sendPart, 1200 + Math.random() * 1800 + think);
       }
     };
+    state.resume = drip;
     drip();
+  }
+
+  // 回前台：把还在打字的回复一口气落完，别让用户回来还看 NPC 表演
+  function flushDelivery() {
+    if (!delivery) return;
+    if (delivery.timer) clearTimeout(delivery.timer);
+    delivery.timer = 0;
+    delivery.batch = true;
+    delivery.resume?.();
   }
 
   // ── 回复节奏（rhythm.js）──
@@ -400,7 +432,7 @@ export function initChat({ show, back, openCall }) {
     invalidateProactive(u);
     let st = replies.get(u.id);
     if (st) return st;
-    st = { texts: [], delay: 0, gen: null, retry: 0, ready: false, text: "", wait: 0, used: 0, req: directive || "", cancelled: false };
+    st = { texts: [], delay: 0, gen: null, retry: 0, ready: false, text: "", wait: 0, used: 0, req: directive || "", cancelled: false, batch: false };
     replies.set(u.id, st);
     scheduleDelay(u, st);
     queueMicrotask(() => startGen(u, st)); // 留一拍：同栈里先把本条话计入，used 才锁得住带了几条
@@ -441,7 +473,7 @@ export function initChat({ show, back, openCall }) {
       return;
     }
     noteReply(u, new Date()); // 张嘴回话 = 短暂真在线，升 active 锁 glow 分钟
-    if (unit === u && mode === "text") {
+    if (unit === u && mode === "text" && !st.batch) {
       showTyping();
       const ms = Math.min(Math.max(st.text.length * THINK_MS, THINK_MIN), THINK_MAX);
       st.wait = setTimeout(() => { st.wait = 0; deliverReply(u, st); }, ms);
@@ -451,7 +483,7 @@ export function initChat({ show, back, openCall }) {
   }
 
   // 文案就绪落气泡：开着本对话按节奏逐条出（多条间再摆 typing），没开着走后台路径
-  function deliverReply(u, st) {
+  function deliverReply(u, st, batch = st.batch) {
     const text = st.text; // genChat 落库前已 keepLines：换行要留住
     replies.delete(u.id);
     if (!text) return;
@@ -465,7 +497,7 @@ export function initChat({ show, back, openCall }) {
         const extra = st.texts.length - st.used;
         if (extra > 0) { const st2 = beginReply(u); for (let k = 0; k < extra; k++) st2.texts.push(""); }
         examBurst(u);
-    }, st.ts);
+    }, st.ts, batch);
   }
 
   // 拆掉某人的在途回复（Reset 清历史时用）：定时器全清，状态退场
