@@ -110,29 +110,43 @@ async function boot() {
   chat.prewarmHist();
 }
 
-// ── 心跳：页面开着每 3 分钟 /ping 一次报活 ──
-// 离开 App 用 /away beacon 立刻标记，回来 /ping 清除；心跳仍是兜底。
+// ── 心跳：每台设备每 3 分钟 /ping 一次报活（带设备 id，presence 按台算）──
+// 离开 App 用 /away beacon 只标自己这台，别压正在别处活跃的设备。
+// 设备 id 是本机常驻匿名标识：人体一人，设备各一座。
+const DEV_ID = (() => {
+  try {
+    let id = localStorage.getItem("fluentchat:device");
+    if (!id) localStorage.setItem("fluentchat:device", id = crypto.randomUUID());
+    return id;
+  } catch { return "anon"; }
+})();
+
 function startHeartbeat() {
   // 页面在后台时不报活：否则会把 /away 刚标好的离线状态又清掉
   const beat = () => {
     if (document.visibilityState === "hidden") return;
-    fetch("/ping", { method: "POST", keepalive: true }).catch(() => {});
+    fetch("/ping", { method: "POST", keepalive: true, headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ d: DEV_ID }) }).catch(() => {});
   };
   beat();
   setInterval(beat, 3 * 60_000);
 }
 
-// ── 离开/回来信号：切后台、锁屏、关页都算「人不在」──
+// ── 离开/回来信号：切后台、锁屏、关页都算「这台设备的人不在」──
+const awayBeacon = (d) => navigator.sendBeacon?.("/away",
+  new Blob([JSON.stringify({ d })], { type: "application/json" }));
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") {
-    navigator.sendBeacon?.("/away");
+    awayBeacon(DEV_ID);
   } else {
-    fetch("/ping", { method: "POST", keepalive: true }).catch(() => {});
+    fetch("/ping", { method: "POST", keepalive: true, headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ d: DEV_ID }) }).catch(() => {});
   }
 });
-window.addEventListener("pagehide", () => { navigator.sendBeacon?.("/away"); });
+window.addEventListener("pagehide", () => { awayBeacon(DEV_ID); });
 window.addEventListener("pageshow", () => {
-  fetch("/ping", { method: "POST", keepalive: true }).catch(() => {});
+  fetch("/ping", { method: "POST", keepalive: true, headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ d: DEV_ID }) }).catch(() => {});
 });
 
 // ── Me 页个人资料：用户名 + 头像（点行 → 选图 → 压成 128px webp dataURL 上传）──

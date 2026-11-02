@@ -347,3 +347,15 @@ npx wrangler deploy                  # 改了 site/ 必须部署，workers.dev �
 - 顺手收尾：`hist.extend` 改 `**q` 展开、flushPending 单泡特判并入 deliverParts（单泡=立即直落等价）、deliverReply 去掉二次 keepLines。
 - smoke.mjs 增补回复链回归段：/chat 桩（每次回复换一组服务器 t）+ 可变镜像桩；断言落盘 t==服务器 t、与预写行同 key 判重、在途重开不插屏、离线 pending 行收下清标、重复合流不重复。
 - 本地验证：smoke 全口径 PASS；生产重放事故链（R2 镜像至 1793240418388）确认双盖章形状。已知限界：合流去重仍以「文案+服务器 t」为身份，撤回/多端一致性等一等公民身份（mid/ACK）另片。
+
+## 消息链路 v2：发送门 + 单一时序真源（2026-11-02）
+
+- 事故：手机已弹 NPC 消息（甚至全文 preview），进 web app 却还在 typing。根因是「发送」有三套时钟：服务端生成即预写（/chat 出结果立刻写 R2 + 盖 lastAi）、web app 表演端节奏机 delay/typing 几分钟后才落泡、notify sweep 只看「已写库 + 判离线」——推送轨在呈现时刻之前就把全文推了出去。
+- **发送门（pending 升格）**：pending 从「合流护栏」升格为本义——预写未发送。推送与已读一律不消费 pending；门只看批尾一条，更老的 pending 不得盖住其后的正式行；表演端死了由 `PENDING_TAKEOVER_MS=10min` 接管放行（通知永不等待 UI 表演）。
+- **单一时序真源**：R2 镜像从整文件覆盖改为按消息身份追加合并（`merge_hist`，键与 live.js `key()` 逐字段对齐 `kind|id|who|text|t`）——同身份表演端行胜出即清 pending，云端永远持有完整时序，推送/已读/未读读同一条账。
+- **已读回执**：`POST /hist/seen`（unit+t，显式 mark_seen）；openChat 合流呈现后回执，推送轨不再为「正在屏幕上读」的人响铃。
+- **按设备 presence**：`state.devices{dev:{lastSeen,awayAt}}`，全体设备过期才算离线；手机后台 away 不再压死桌面在场。前端 `fluentchat:device` id，/ping、/away 均带 `d`。老册（devices 缺）灰度期落回遗留字段。
+- **代打互斥（让渡制）**：页面不可见 = 浏览器不抽签（对用户消息的回复节奏不受影响）；cron 抽签前发现批尾有未过接管线的预写则让渡该格且不扣名额。主动开口权柄任意时刻只归一方。
+- 顺手：`_load_hist` 收拢为 fail-soft 空册（调用方不再各自设防）；`_ai_rows` 合并三处重复扫描；`_touch_device` 合并 ping/away 台账逻辑；砍 count 回包与遗留字段双写。
+- 验证：worker 逻辑单测（发送门/接管/合并/presence 二十余断言）+ tools/smoke.mjs 全口径 PASS + py_compile/node --check。
+- 已知残留：可见页心跳恰欠的那一瞬（弱网）双抽理论上仍可碰头，彻底根除需共享额度台账，另片。

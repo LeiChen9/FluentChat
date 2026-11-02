@@ -177,8 +177,10 @@ async def _hist_route(env, user: str, request) -> Response:
             return Response.json({"error": "请求体不是合法 JSON"}, status=400)
         if not isinstance(hist, list):
             return Response.json({"error": "历史必须是数组"}, status=400)
-        await env.DATA.put(key, json.dumps(hist, ensure_ascii=False))
-        t = _newest_ai_t(hist)
+        old = await _load_hist(env, user, unit)
+        merged = merge_hist(old, hist)
+        await env.DATA.put(key, json.dumps(merged, ensure_ascii=False))
+        t = _newest_ai_t(merged)
         if t:
             try:
                 await _note_ai(env, user, unit, t)
@@ -390,8 +392,9 @@ async def _contact(env, unit: str) -> dict | None:
 
 
 async def _load_hist(env, user: str, unit: str) -> list:
-    obj = await env.DATA.get(f"{user}/hist/{unit}.json")
+    """镜像读取。读不到/坏档一律空册：调用方不必各自设防，坏一册别炸全场。"""
     try:
+        obj = await env.DATA.get(f"{user}/hist/{unit}.json")
         hist = json.loads(await obj.text()) if obj is not None else []
     except Exception:
         hist = []
@@ -401,6 +404,32 @@ async def _load_hist(env, user: str, unit: str) -> list:
 async def _save_hist(env, user: str, unit: str, hist: list) -> None:
     await env.DATA.put(f"{user}/hist/{unit}.json",
                        json.dumps(hist[-HIST_MAX_STORE:], ensure_ascii=False))
+
+
+def _hist_key(entry: dict) -> str:
+    """消息身份键，与 live.js 的 key() 逐字段对齐：kind|id|who|text|t。"""
+    t = entry.get("t")
+    return "|".join((
+        str(entry.get("kind") or "b"),
+        str(entry.get("id") or ""),
+        str(entry.get("who")),
+        str(entry.get("text") or ""),
+        str(int(t) if isinstance(t, (int, float)) else ""),
+    ))
+
+
+def merge_hist(old: list, new: list) -> list:
+    """云端镜像按消息身份追加合并（云 = 单一时序真源，不再是整文件覆盖）。
+
+    同身份条目新胜旧：表演端 PUT 到场即送达，预写的 pending 标记随合并消失；
+    客户端本地窗口掐掉的老条目云端保留。按 t 升序，超限掐头。"""
+    by_key: dict[str, dict] = {}
+    for e in [*old, *new]:
+        if isinstance(e, dict):
+            by_key[_hist_key(e)] = e
+    out = sorted(by_key.values(),
+                 key=lambda e: e.get("t") if isinstance(e.get("t"), (int, float)) else 0)
+    return out[-HIST_MAX_STORE:]
 
 
 def _seen_at(state: dict, unit: str) -> int:
@@ -432,7 +461,21 @@ def _set_last_ai(state: dict, unit: str, t: int) -> bool:
 
 
 def _offline(state: dict, now_ms: float) -> bool:
-    """人不在 App 里：显式 away beacon，或心跳过期。"""
+    """人不在任何设备上：每台设备独立报心跳/离开，全体过期才算离线。
+    devices 缺的老册落到单设备遗留字段（部署灰度窗口内还在唱主角）。"""
+    devs = state.get("devices")
+    if isinstance(devs, dict) and devs:
+        for dev in devs.values():
+            if not isinstance(dev, dict):
+                continue
+            away = dev.get("awayAt")
+            if isinstance(away, (int, float)) and away > 0:
+                continue
+            seen = dev.get("lastSeen")
+            if isinstance(seen, (int, float)) and 0 < seen \
+                    and seen > now_ms - cloud_npc.OFFLINE_MS:
+                return False
+        return True
     away = state.get("awayAt")
     if isinstance(away, (int, float)) and away > 0:
         return True
@@ -441,12 +484,60 @@ def _offline(state: dict, now_ms: float) -> bool:
                 and seen > now_ms - cloud_npc.OFFLINE_MS)
 
 
-def _newest_ai(hist: list) -> dict | None:
-    for item in reversed(hist):
-        if (item.get("who") == "ai" and not item.get("hidden")
-                and isinstance(item.get("t"), (int, float))):
-            return item
-    return None
+def _touch_device(state: dict, dev: str, now_ms: int, away: bool) -> None:
+    """一台设备报一座台账：ping = 在场并清离开；away = 只标自己这台。"""
+    devs = _devices_of(state)
+    devs[dev] = {"lastSeen": 0 if away else now_ms, "awayAt": now_ms if away else 0}
+    state["devices"] = devs
+
+
+def _devices_of(state: dict) -> dict:
+    """设备名册视图：抄掉 5 天没露面的死设备，避免册子膨胀。"""
+    devs = state.get("devices")
+    if not isinstance(devs, dict):
+        return {}
+    fresh = {}
+    for name, dev in devs.items():
+        if isinstance(dev, dict) and isinstance(dev.get("lastSeen"), (int, float)) \
+                and dev["lastSeen"] > cloud_npc.now_ms() - 5 * 86400_000:
+            fresh[name] = dev
+    return fresh
+
+
+# pending = 预写未发送：表演端（web app 节奏机）还没把这条泡落下来。
+# 推送与已读一律不消费 pending；表演端死了（关页/断电）由下面的接管
+# 时限强制放行 —— 通知永远不等待 UI 表演。
+PENDING_TAKEOVER_MS = 10 * 60_000
+
+
+def _ai_rows(hist: list) -> list[dict]:
+    """hist 里能当消息体用的 ai 行，倒序（最新在前）。"""
+    return [i for i in reversed(hist) if (i.get("who") == "ai" and not i.get("hidden")
+            and isinstance(i.get("t"), (int, float)))]
+
+
+def _newest_ai(hist: list, now_ms: float = 0) -> dict | None:
+    """最新一条已送达的 AI 消息。now_ms 传值 = 允许超时接管 pending 行
+    （推送轨用），不传 = 只认表演端真送出的行（已读用）。
+
+    门只看批尾一条：最新行不是 pending 就直认；门后要退，退到最新
+    delivered —— 别让更老的尾巴 pending 盖住它之后的正式行。"""
+    rows = _ai_rows(hist)
+    if not rows:
+        return None
+    newest = rows[0]
+    if not newest.get("pending"):
+        return newest
+    if now_ms and int(newest["t"]) < now_ms - PENDING_TAKEOVER_MS:
+        return newest  # 批尾 pending 已过接管线：表演端已死，接管
+    return next((i for i in rows[1:] if not i.get("pending")), None)
+
+
+def _pending_in_flight(hist: list, now_ms: float) -> bool:
+    """批尾还有未过接管时限的预写 = 有一场表演在途，cron 代打该让渡这一格。"""
+    rows = _ai_rows(hist)
+    return bool(rows) and bool(rows[0].get("pending")) \
+        and int(rows[0]["t"]) >= now_ms - PENDING_TAKEOVER_MS
 
 
 def _newest_ai_t(hist: list) -> int:
@@ -520,24 +611,54 @@ class Default(WorkerEntrypoint):
                 return Response.json({"error": "请先登录"}, status=401)
             return await _hist_route(self.env, user, request)
 
-        # 心跳：页面开着每 3 分钟报到一次。cron 只代打给「心跳断了」的用户，
-        # 别跟浏览器自己的抽签叠着发。
-        if request.method == "POST" and path.endswith("/ping"):
+        # 已读回执：设备把云端消息合进本地并呈现（openChat 合流）后回执一笔。
+        # 与 PUT 落库无关，只推已读水位。显式 mark_seen：设备在场就是读过，
+        # 推送轨从此不再为「正在屏幕上读」的人响铃。
+        if request.method == "POST" and path.endswith("/hist/seen"):
             if not user:
                 return Response.json({"error": "请先登录"}, status=401)
+            try:
+                body = await request.json()
+            except Exception:
+                body = {}
+            unit = str(body.get("unit") or "")
+            if not _SAFE_UNIT.match(unit):
+                return Response.json({"error": "unit 非法"}, status=400)
+            t = body.get("t")
+            if not isinstance(t, (int, float)) or t <= 0:
+                return Response.json({"error": "t 非法"}, status=400)
             state = await cloud_npc.load_state(self.env, user)
-            state["lastSeen"] = cloud_npc.now_ms()
-            state.pop("awayAt", None)  # 人回来了
+            _mark_seen(state, unit, int(t))
             await cloud_npc.save_state(self.env, user, state)
             return Response.json({"ok": True})
 
-        # 离开信号：visibilitychange/pagehide 用 sendBeacon 打一发，
-        # 不必等 7 分钟心跳过期；通知器下一拍就能按离线处理。
+        # 心跳：每台设备每 3 分钟报到一次（前端带设备 id）。cron 只代打给
+        # 「所有设备都断了」的用户，别跟浏览器自己的抽签叠着发。
+        if request.method == "POST" and path.endswith("/ping"):
+            if not user:
+                return Response.json({"error": "请先登录"}, status=401)
+            try:
+                body = await request.json()
+            except Exception:
+                body = {}
+            state = await cloud_npc.load_state(self.env, user)
+            _touch_device(state, str(body.get("d") or "anon")[:64],
+                          cloud_npc.now_ms(), away=False)
+            await cloud_npc.save_state(self.env, user, state)
+            return Response.json({"ok": True})
+
+        # 离开信号：visibilitychange/pagehide 用 sendBeacon 打一发，只标
+        # 自己这台设备，不压别台的在场；不必等心跳过期，通知器下一拍就能算。
         if request.method == "POST" and path.endswith("/away"):
             if not user:
                 return Response.json({"error": "请先登录"}, status=401)
+            try:
+                body = await request.json()
+            except Exception:
+                body = {}
             state = await cloud_npc.load_state(self.env, user)
-            state["awayAt"] = cloud_npc.now_ms()
+            _touch_device(state, str(body.get("d") or "anon")[:64],
+                          cloud_npc.now_ms(), away=True)
             await cloud_npc.save_state(self.env, user, state)
             return Response.json({"ok": True})
 
@@ -809,7 +930,7 @@ class Default(WorkerEntrypoint):
                 if last and last <= _seen_at(state, unit):
                     continue
                 hist = await _load_hist(env, user, unit)
-                newest = _newest_ai(hist)
+                newest = _newest_ai(hist, now_ms)
                 if newest is None:
                     continue
                 t = int(newest["t"])
@@ -859,6 +980,12 @@ class Default(WorkerEntrypoint):
                 contact = await _contact(env, unit)
                 if not isinstance(contact, dict):
                     diag.append({"unit": unit, "err": "contact load failed"})
+                    continue
+                # 代打让渡：批尾有未过接管时限的预写（隐身页在途或刚替我们
+                # 生成了），这一格不抽、不扣名额；下一 tick 再说。
+                if _pending_in_flight(await _load_hist(env, user, unit),
+                                      now * 1000.0):
+                    diag.append({"unit": unit, "yield": "pending in flight"})
                     continue
                 led = ledgers.get(unit)
                 led = led if isinstance(led, dict) else {}

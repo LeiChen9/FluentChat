@@ -518,6 +518,10 @@ export function initChat({ show, back, openCall }) {
     if (proTimer) return;
     proTimer = setInterval(() => {
       paintDots();
+      // 代打让渡：页面看不见 = 就不算人在场。主动开口的抽签让给云端 cron
+      // （它按同一份 state 判离线，双端互斥不叠发）；对用户消息的回复
+      // 节奏照常走 —— 那是回话，不是开口。
+      if (document.visibilityState !== "visible") return;
       // 有回复/主动消息在途、或上一条还没落完的人不参与抽签，避免两路生成共用旧上下文、也避免白扣名额
       const idle = people.filter((p) =>
         !replies.has(p.id) && !proBusy.has(p.id) && !proFail.has(p.id) && !delivery);
@@ -527,7 +531,7 @@ export function initChat({ show, back, openCall }) {
 
   async function fireProactive(p, retried) {
     // 不光当前对话页：后台的人也不能和回复生成撞车
-    if (replies.has(p.id) || proBusy.has(p.id)) return;
+    if (document.visibilityState !== "visible" || replies.has(p.id) || proBusy.has(p.id)) return;
     if (unit === p && mode !== "text") return;
     const epoch = (proEpoch.get(p.id) || 0) + 1;
     proEpoch.set(p.id, epoch);
@@ -959,6 +963,13 @@ export function initChat({ show, back, openCall }) {
             else addBubble(item.who === "me" ? "me" : "ai", item.text, item.t ?? null);
           }
           scrollDown(true);
+          // 已读回执：合流呈现 = 看过了，推送轨别再喊一嗓子
+          const seenT = extra.filter((c) => c.who === "ai" && c.t).at(-1)?.t;
+          if (seenT) fetch("/hist/seen", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ unit: u.id, t: seenT }),
+          }).catch(() => {});
         }
       }
     }
