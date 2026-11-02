@@ -237,6 +237,9 @@ button { font: inherit; color: inherit; }
   position: absolute;
   inset: 0;
   padding-bottom: 8px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
 }
 
 .view[hidden] { display: none; }
