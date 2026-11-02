@@ -59,11 +59,13 @@ for (const i of ["chat-list","contact-list","moment-list","chat-name","chat-stat
   "call","call-av","call-name","call-state","call-said","call-end",
   "call-back","call-list","call-detail-name","call-detail-meta","call-detail-body",
   "auth","auth-form","auth-user","auth-pass","auth-err","auth-reg",
-  "view-chats","view-calls","view-moments","view-me","view-chat","view-call",
+  "view-chats","view-practice","view-calls","view-moments","view-me","view-chat","view-call",
+  "practice-list",
   "push-enable","push-note","push-err","profile-err","profile-row","me-avatar",
   "me-user","avatar-file","logout-row","notif-sheet","notif-sheet-close"]) els.set(i, mkEl(i));
 const tabs = [
   Object.assign(mkEl("", "button"), { dataset: { view: "chats" } }),
+  Object.assign(mkEl("", "button"), { dataset: { view: "practice" } }),
   Object.assign(mkEl("", "button"), { dataset: { view: "calls" } }),
   Object.assign(mkEl("", "button"), { dataset: { view: "moments" } }),
   Object.assign(mkEl("", "button"), { dataset: { view: "me" } }),
@@ -85,6 +87,11 @@ class AC {
   createScriptProcessor() { return { connect() {}, disconnect() {}, onaudioprocess: null }; }
 }
 globalThis.window = { AudioContext: AC, addEventListener() {} };
+globalThis.Audio = class {
+  constructor() { this.currentTime = 0; }
+  play() { return Promise.resolve(); }
+  pause() {}
+};
 const WSS = [];
 globalThis.WebSocket = class {
   static OPEN = 1;
@@ -132,6 +139,12 @@ globalThis.fetch = async (url, opts) => {
         { who: "ai", text: "Hi Rice", t: 2 },
       ]) };
   }
+  if (u === "/practice/plan") {
+    return { ok: true, status: 200, json: async () => ({ units: [
+      { id: "unit-01", chapter: "survival", title: "Meet Me", can_do: "认识一个新朋友" },
+      { id: "unit-07", chapter: "expression", title: "At Work", can_do: "聊工作日常" },
+    ] }) };
+  }
   fetches.push({ url, body: opts?.body ? JSON.parse(opts.body) : null });
   return { ok: true, json: async () => ({ token: "tok", model: "m" }) };
 };
@@ -152,6 +165,26 @@ console.log("✓ 模块加载");
 console.log("✓ 列表渲染 | 聊天:", els.get("chat-list").children.length,
             "| 联系人:", els.get("contact-list").children.length,
             "| 朋友圈:", els.get("moment-list").children.length);
+
+tabs[1].fire("click");
+await tick(20);
+const practiceRows = els.get("practice-list").children
+  .flatMap((c) => c.children || [])
+  .filter((c) => String(c.className).includes("practice-row"));
+if (practiceRows.length !== 2) throw new Error(`practice rows: ${practiceRows.length}`);
+console.log("✓ Practice 场景卡渲染:", practiceRows.length);
+
+practiceRows[0].fire("click");
+await tick(30);
+const practiceToken = fetches.find((f) => f.url === "/token" && f.body?.practice);
+if (!practiceToken) throw new Error("practice click did not request a practice token");
+if (practiceToken.body.unit !== "unit-01") {
+  throw new Error(`practice token unit: ${practiceToken.body.unit}`);
+}
+if (els.get("call").hidden) throw new Error("practice call overlay not shown");
+console.log("✓ Practice 卡发起练习通话:", practiceToken.body.unit);
+els.get("call-end").fire("click");
+await tick(10);
 
 tabs[0].fire("click");
 const row = els.get("chat-list").children[0].children[0];

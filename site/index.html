@@ -10,7 +10,7 @@
 <title>FluentChat</title>
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="assets/FluentChat.png">
-<link rel="stylesheet" href="css/app.css?v=20261025-1">
+<link rel="stylesheet" href="css/app.css?v=20261103-2">
 </head>
 <body>
 <div class="app">
@@ -23,6 +23,15 @@
         <h1 class="page-title">Chats</h1>
       </header>
       <ul class="row-list" id="chat-list"></ul>
+    </section>
+
+    <!-- ── Practice：Fiona 的 5 分钟练习房间 ── -->
+    <section class="view" id="view-practice" hidden>
+      <header class="page-head">
+        <h1 class="page-title">Practice</h1>
+        <p class="page-sub">5-minute calls with Fiona</p>
+      </header>
+      <ul class="row-list" id="practice-list"></ul>
     </section>
 
     <!-- ── 通话记录：每次通话一条，点进去看转写和点评 ── -->
@@ -207,6 +216,14 @@
       <span>Chats</span>
     </button>
 
+    <button class="tab" role="tab" data-view="practice" aria-controls="view-practice">
+      <svg viewBox="0 0 28 28" fill="none" aria-hidden="true">
+        <rect x="11" y="4.5" width="6" height="11" rx="3" fill="currentColor"/>
+        <path d="M8 13a6 6 0 0 0 12 0M14 19v4M10 23h8" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>
+      </svg>
+      <span>Practice</span>
+    </button>
+
     <button class="tab" role="tab" data-view="calls" aria-controls="view-calls">
       <svg viewBox="0 0 28 28" fill="none" aria-hidden="true">
         <path d="M7.8 4.6c.7-.7 1.9-.7 2.6 0l2.3 2.3c.7.7.7 1.9 0 2.6l-1.4 1.4a12.4 12.4 0 0 0 4.6 4.6l1.4-1.4c.7-.7 1.9-.7 2.6 0l2.3 2.3c.7.7.7 1.9 0 2.6l-1.5 1.5c-.9.9-2.3 1.3-3.6.8-5-1.9-8.9-5.8-10.8-10.8-.5-1.3-.1-2.7.8-3.6l1.7-1.7Z" fill="currentColor"/>
@@ -233,6 +250,6 @@
   </nav>
 
 </div>
-<script type="module" src="js/app.js?v=20261102-2"></script>
+<script type="module" src="js/app.js?v=20261103-2"></script>
 </body>
 </html>

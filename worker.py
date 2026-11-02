@@ -27,6 +27,7 @@ from backend.common import (ENDPOINTS, _load_subs, _save_subs,
                             bind_worker_env, env_key, run_chain, vapid_pubkey)
 from backend.prompt_data import PROMPTS
 from backend.time_context import DEFAULT_TZ_OFFSET, build_time_context, clamp_tz
+from backend.units import UNIT_META
 from backend.config import (AUTH_TOKENS_URL, HEAVY_USERS_PER_TICK,
                             HIST_MAX_CHARS, HIST_MAX_ITEMS, HIST_MAX_STORE,
                             MODEL, NAMES, PERSONAS, SPLIT_CAPS, UNITS, VOICE,
@@ -297,6 +298,7 @@ def build_system_instruction(
     unit: str, history: list[dict] | None = None,
     tz_offset: int = DEFAULT_TZ_OFFSET,
     life_state: dict | None = None, contact: dict | None = None,
+    practice: bool = False,
 ) -> str:
     """把基础教学规则、persona 与本次话题拼成一份完整 prompt。
 
@@ -311,7 +313,11 @@ def build_system_instruction(
         text = _persona_system(unit, tz_offset, ctx['header'], life_state, contact)
         dated = ctx["history"]
     else:
-        text = f"{read_prompt(base_name)}\n\n{read_prompt(f'{unit}.md')}"
+        parts = [read_prompt(base_name)]
+        if practice:
+            parts.append(read_prompt("practice_room"))
+        parts.append(read_prompt(f"{unit}.md"))
+        text = "\n\n".join(parts)
         dated = [{"who": h["who"], "text": h["text"], "prefix": ""} for h in history]
     if not history:
         return text
@@ -344,6 +350,7 @@ def build_token_payload(
     unit: str, history: list[dict] | None = None,
     tz_offset: int = DEFAULT_TZ_OFFSET,
     life_state: dict | None = None, contact: dict | None = None,
+    practice: bool = False, voice: str | None = None,
 ) -> dict:
     """构造签发请求体。unit 参数横跨两类 id：unit-XX 和 persona-xxx。
 
@@ -362,14 +369,16 @@ def build_token_payload(
             "systemInstruction": {
                 "parts": [
                     {"text": build_system_instruction(unit, history, tz_offset,
-                                                      life_state, contact)}
+                                                      life_state, contact, practice)}
                 ]
             },
             "generationConfig": {
                 "responseModalities": ["AUDIO"],
                 "speechConfig": {
                     "voiceConfig": {
-                        "prebuiltVoiceConfig": {                    "voiceName": VOICE_BY_ID.get(unit, VOICE)}
+                        "prebuiltVoiceConfig": {
+                            "voiceName": voice or VOICE_BY_ID.get(unit, VOICE)
+                        }
                     }
                 },
             },
@@ -606,6 +615,17 @@ class Default(WorkerEntrypoint):
                 "chain_ready": has,
             })
 
+        # ── Practice：场景元数据（Practice tab 的数据源）──
+        if request.method == "GET" and path.endswith("/practice/plan"):
+            if not user:
+                return Response.json({"error": "请先登录"}, status=401)
+            return Response.json({
+                "units": [
+                    {"id": uid, "chapter": chapter, "title": title, "can_do": can_do}
+                    for uid, (chapter, title, can_do) in UNIT_META.items()
+                ]
+            })
+
         # ── 登录后的业务；历史镜像挂在门禁之后 ──
         if request.method in ("GET", "PUT") and "/hist/" in path:
             if not user:
@@ -757,8 +777,8 @@ class Default(WorkerEntrypoint):
             except Exception:
                 return Response.json({"error": "请求体不是合法 JSON"}, status=400)
             unit = body.get("unit")
-            if unit not in PERSONAS:
-                return Response.json({"error": "unit 只收 persona"}, status=400)
+            if unit not in PERSONAS and unit not in UNITS:
+                return Response.json({"error": "unit 只收 persona 或 unit"}, status=400)
             turns = clean_call_turns(body.get("turns"))
             if not any(t["who"] == "me" for t in turns):
                 return Response.json({"error": "没有可点评的用户发言"}, status=400)
@@ -859,8 +879,12 @@ class Default(WorkerEntrypoint):
                 status=400,
             )
 
+        practice = bool(body.get("practice"))
+        if practice and unit not in UNITS:
+            return Response.json({"error": "practice 只收 unit-XX"}, status=400)
+
         # 聊天历史（可选）：上次聊过的内容钉进 prompt，模型有记忆
-        history = sanitize_history(body.get("history"))
+        history = [] if practice else sanitize_history(body.get("history"))
         tz_offset = clamp_tz(body.get("tz"))
 
         # 通话也带上他此刻的生活（与 /chat 同一份状态）
@@ -879,8 +903,9 @@ class Default(WorkerEntrypoint):
                     "x-goog-api-key": env_key("GEMINI_API_KEY"),
                     "Content-Type": "application/json",
                 },
-                body=json.dumps(build_token_payload(unit, history, tz_offset,
-                                                    life_state, contact)),
+                body=json.dumps(build_token_payload(
+                    unit, history, tz_offset, life_state, contact, practice,
+                    VOICE_BY_ID["persona-Fiona"] if practice else None)),
             )
             if resp.status != 200:
                 detail = await resp.text()

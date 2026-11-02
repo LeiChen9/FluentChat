@@ -1,9 +1,10 @@
-import { initChat, fmtRowTime } from "./live.js?v=20261102-1";
+import { initChat, fmtRowTime } from "./live.js?v=20261103-2";
 import { loadContacts } from "./personas.js?v=20261024-2";
 import { setViewerKey } from "./rhythm.js?v=20261024-3";
 import { initCalls } from "./calls.js?v=20261025-1";
-// 四个主 tab + 两个子页（聊天 / 通话详情）。
-const VIEWS = ["chats", "calls", "moments", "me", "chat", "call"];
+import { initPractice } from "./practice.js?v=20261103-2";
+// 五个主 tab + 两个子页（聊天 / 通话详情）。
+const VIEWS = ["chats", "practice", "calls", "moments", "me", "chat", "call"];
 
 // 子页 push 进去后底部仍然亮着所属的 tab。
 const TAB_OF = { chat: "chats", call: "calls" };
@@ -37,6 +38,7 @@ function showView(name) {
   }
   // 每次进 Calls 重画列表（点评可能刚在后台生成完）
   if (name === "calls") calls.refresh();
+  if (name === "practice") practice.refresh();
 }
 
 const calls = initCalls({
@@ -51,6 +53,13 @@ const chat = initChat({
   openCall: (id) => calls.open(id),
 });
 leaveChat = () => chat.close();
+
+const practice = initPractice({
+  open: (unitId) => {
+    const fiona = findPersona?.("persona-Fiona");
+    if (fiona) chat.openPractice(fiona, unitId);
+  },
+});
 
 // ── 朋友圈：read 自 contacts 数据目录，代码只做渲染 ──
 let findPersona = null;

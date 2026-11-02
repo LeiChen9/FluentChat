@@ -1008,6 +1008,14 @@ export function initChat({ show, back, openCall }) {
     if (!statusTimer) statusTimer = setInterval(showStatus, 30000);
   }
 
+  // Practice 场景卡：打开 Fiona 的对话，并立刻拨一通练习电话。
+  // ensureAudio 必须留在点击手势里同步跑；openChat 的镜像拉取不阻塞拨号。
+  function openPractice(u, unitId) {
+    ensureAudio();
+    openChat(u);
+    startCall(unitId);
+  }
+
   // 离开对话页就整个拆掉：连接、麦克风、正在写的气泡，全部清干净。
   // 历史另存在 localStorage 里，不跟着这里走 —— 下次打开同一 Unit 会重新渲染，
   // 而且签 token 时会带上，模型那边也有记忆。
@@ -1065,6 +1073,8 @@ export function initChat({ show, back, openCall }) {
     const u = unit;
     if (!u) return;
     const seq = ++connectSeq;
+    const practice = callRec.practice;
+    const target = callRec.unit;
     setChatState("Connecting…"); // 顶栏给拨号反馈；文案由具体失败路径覆盖
 
     // 1. 换一次性 token。prompt 钉在 token 里，前端碰不到。
@@ -1076,9 +1086,10 @@ export function initChat({ show, back, openCall }) {
       // history：把之前聊过的交给后端钉进 system instruction，
       // 模型接着上次聊，不再重头开场。
       body: JSON.stringify({
-        unit: u.id,
+        unit: target,
         history: packHist(),
         tz: new Date().getTimezoneOffset(),
+        practice,
       }),
     }).then(async (res) => {
       const data = await res.json().catch(() => ({}));
@@ -1247,14 +1258,15 @@ export function initChat({ show, back, openCall }) {
     ringback = null;
   }
 
-  function startCall() {
+  function startCall(practiceUnit = null) {
     if (!unit || mode !== "text" || ws) return;
     ensureAudio(); // 必须在用户手势里同步调，手机才肯出声、才肯开麦克风
     startRingback(); // 彩铃跟着手势走：不等握手、AI 开口前一直响
     mode = "call";
     callRec = {
       id: `c_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-      unit: unit.id,
+      unit: practiceUnit || unit.id,
+      practice: !!practiceUnit,
       name: unit.name,
       avatar: unit.avatar,
       start: Date.now(),
@@ -1262,6 +1274,7 @@ export function initChat({ show, back, openCall }) {
       turns: [],
     };
     callBox.hidden = false;
+    callName.textContent = practiceUnit ? `${unit.name} · Practice` : unit.name;
     callSaid.textContent = "";
     setCallState("Connecting…"); // 拨号即握手：setupComplete 之后才 On call
     enableMic();
@@ -1291,8 +1304,8 @@ export function initChat({ show, back, openCall }) {
     if (!rec || !rec.connected) return;
     rec.dur = Math.max(0, Date.now() - rec.start);
     const id = saveCall(rec);
-    const item = { kind: "call", id, dur: rec.dur, t: rec.start };
-    if (unit && unit.id === rec.unit && mode === "text") addCallLine(item);
+    const item = { kind: "call", id, dur: rec.dur, t: rec.start, practice: rec.practice };
+    if (unit && (unit.id === rec.unit || rec.practice) && mode === "text") addCallLine(item);
     pushHist(item);
   }
 
@@ -1301,7 +1314,7 @@ export function initChat({ show, back, openCall }) {
     const node = document.createElement("button");
     node.type = "button";
     node.className = "msg msg--call";
-    node.textContent = `Voice call · ${fmtDur(item.dur)}`;
+    node.textContent = `${item.practice ? "Practice call" : "Voice call"} · ${fmtDur(item.dur)}`;
     node.addEventListener("click", () => openCall?.(item.id));
     body.append(node);
     scrollDown(true);
@@ -1338,7 +1351,7 @@ export function initChat({ show, back, openCall }) {
 
   // ── 交互 ──
   backBtn.addEventListener("click", () => back?.());
-  callBtn.addEventListener("click", startCall);
+  callBtn.addEventListener("click", () => startCall());
   callEnd.addEventListener("click", hangUp);
   resetBtn.addEventListener("click", resetChat);
 
@@ -1396,5 +1409,6 @@ export function initChat({ show, back, openCall }) {
     refreshStatuses: paintDots,
     // 联系人页也从这里进对话
     open: openChat,
+    openPractice,
   };
 }
