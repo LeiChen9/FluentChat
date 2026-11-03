@@ -1286,24 +1286,22 @@ button { font: inherit; color: inherit; }
 }
 .call-retry:active { opacity: .7; }
 
-/* Chats 下拉刷新指示：轻量胶囊，贴在顶栏下方 */
+/* Chats 下拉刷新：顶部转圈图标（微信式），整页跟手位移由 JS 驱动 */
 .ptr {
   position: absolute;
-  top: calc(env(safe-area-inset-top) + 8px);
+  top: calc(env(safe-area-inset-top) + 10px);
   left: 50%;
   z-index: 40;
-  padding: 6px 14px;
-  border-radius: 999px;
-  background: var(--bar-bg);
-  -webkit-backdrop-filter: blur(12px);
-  backdrop-filter: blur(12px);
-  box-shadow: 0 2px 12px rgba(62, 54, 46, 0.12);
-  color: var(--ink-2);
-  font-size: 12.5px;
-  font-weight: 600;
+  width: 24px;
+  height: 24px;
+  margin-left: -12px;
+  box-sizing: border-box;
+  border-radius: 50%;
+  border: 2px solid rgba(62, 54, 46, 0.15);
+  border-top-color: var(--accent);
   pointer-events: none;
   opacity: 0;
-  transform: translate(-50%, -10px);
-  transition: opacity 160ms var(--soft), transform 160ms var(--soft);
+  transition: opacity 160ms var(--soft);
 }
-.ptr--show { opacity: 1; transform: translate(-50%, 0); }
+.ptr--spin { animation: ptrspin 0.8s linear infinite; }
+@keyframes ptrspin { to { transform: rotate(360deg); } }

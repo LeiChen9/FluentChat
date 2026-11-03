@@ -219,15 +219,30 @@ async function setupProfileUI() {
     location.reload();
   });
 }
-// ── Chats 下拉刷新：滚到顶再下拉，重拉镜像合流 + 重画 + 报活 ──
+// ── Chats 下拉刷新：滚到顶再下拉，整页跟手下拽，松手转圈刷新 ──
 function initPullRefresh(view, run) {
   const ptr = document.createElement("div");
   ptr.className = "ptr";
-  ptr.hidden = true;
   stage.appendChild(ptr);
-  const THRESHOLD = 56;
+  const THRESHOLD = 56, MAX = 110;
   let startY = 0, dist = 0, pulling = false, busy = false;
-  const hide = () => { pulling = false; dist = 0; ptr.classList.remove("ptr--show"); ptr.hidden = true; };
+  const paint = () => {
+    view.style.transition = "none";
+    view.style.transform = dist ? `translateY(${dist}px)` : "";
+    ptr.style.opacity = dist > 4 ? "1" : "0";
+    ptr.style.transform = `rotate(${dist * 3}deg)`;
+  };
+  const settle = (to, ms) => {
+    view.style.transition = `transform ${ms}ms var(--soft)`;
+    view.style.transform = to ? `translateY(${to}px)` : "";
+  };
+  const reset = () => {
+    pulling = false; dist = 0;
+    ptr.classList.remove("ptr--spin");
+    settle(0, 200);
+    ptr.style.opacity = "0";
+    ptr.style.transform = "rotate(0deg)";
+  };
   view.addEventListener("touchstart", (e) => {
     if (busy || view.scrollTop > 0 || e.touches.length !== 1) return;
     startY = e.touches[0].clientY;
@@ -237,25 +252,27 @@ function initPullRefresh(view, run) {
   view.addEventListener("touchmove", (e) => {
     if (!pulling || busy) return;
     const dy = e.touches[0].clientY - startY;
-    if (dy <= 0 || view.scrollTop > 0) { hide(); return; }
+    if (dy <= 0 || view.scrollTop > 0) { reset(); return; }
     e.preventDefault();
-    dist = Math.min(96, dy);
-    ptr.hidden = false;
-    ptr.classList.add("ptr--show");
-    ptr.textContent = dist >= THRESHOLD ? "Release to refresh" : "Pull to refresh";
+    dist = Math.min(MAX, dy);
+    paint();
   }, { passive: false });
   view.addEventListener("touchend", async () => {
-    if (!pulling || busy || dist < THRESHOLD) { hide(); return; }
+    if (!pulling || busy) return;
     pulling = false;
+    if (dist < THRESHOLD) { reset(); return; }
     busy = true;
-    ptr.hidden = false;
-    ptr.classList.add("ptr--show");
-    ptr.textContent = "Refreshing…";
-    try { await run(); ptr.textContent = "Updated"; }
-    catch { ptr.textContent = "Refresh failed"; }
-    setTimeout(() => { busy = false; hide(); }, 600);
+    settle(THRESHOLD, 160); // 内容停在阈值处，spinner 转起来
+    ptr.style.opacity = "1";
+    ptr.classList.add("ptr--spin");
+    try { await run(); } catch {}
+    ptr.classList.remove("ptr--spin");
+    ptr.style.opacity = "0";
+    ptr.style.transform = "rotate(0deg)";
+    settle(0, 220);
+    busy = false; dist = 0;
   });
-  view.addEventListener("touchcancel", hide);
+  view.addEventListener("touchcancel", () => { if (!busy) reset(); });
 }
 
 initPullRefresh(document.getElementById("view-chats"), async () => {
