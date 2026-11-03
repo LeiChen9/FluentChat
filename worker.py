@@ -19,7 +19,10 @@
 import json
 import re
 from urllib.parse import urlsplit
+
 from workers import Response, WorkerEntrypoint, fetch as js_fetch
+from workers import wait_until
+from workers.asgi import run_in_background
 from backend import auth
 from backend import cloud_npc
 from backend import life
@@ -736,37 +739,45 @@ class Default(WorkerEntrypoint):
             contact = await _contact(self.env, unit) or {}
             now = cloud_npc.now_ms()
             lif = life.settle(await life.load(self.env, user, unit), contact, now, tz_offset)
-            try:
-                msgs = to_messages(unit, history, tz_offset, lif, contact)
-                if directive:
-                    msgs.append({"role": "user", "content": directive})
-                out = await run_chain(msgs)
-                parsed = parse_chat(out.get("content") or "")
-                parts = split_reply(unit, out.get("content") or "")
-                out["content"] = "\n".join(parts)
-                print(f"chat reply unit={unit} bubbles={len(parts)}")
-            except RuntimeError as e:
-                print(f"chat failure unit={unit}: {e}")
-                return Response.json({"error": str(e)}, status=502)
-            # 这组 t 是消息的正式身份：随 parts 原样回给前端，发泡/落盘签同一个 t，
-            # 服务端预写与客户端落盘对同一条消息产出同一条镜像记录（合流按 who|text|t 判重）
-            t0 = cloud_npc.now_ms() if parts else 0
-            out["parts"] = [{"text": p, "t": t0 + i} for i, p in enumerate(parts)]
-            try:
-                if parts:
-                    hist = await _load_hist(self.env, user, unit)
-                    hist.extend({"who": "ai", "pending": True, **q} for q in out["parts"])
-                    await _save_hist(self.env, user, unit, hist)
-                    # 只记 lastAi，不推水位：这条回复还没送到浏览器
-                    await _note_ai(self.env, user, unit, t0 + len(parts) - 1,
-                                   mark_seen=False)
-            except Exception as e:
-                print(f"[hist] {user}/{unit} reply save failed: {type(e).__name__}: {e}")
-            try:
-                await life.save(self.env, user, unit, life.apply_chat(lif, parsed, now))
-            except Exception as e:
-                print(f"[life] {user}/{unit} save failed: {type(e).__name__}: {e}")
-            return Response.json(out)
+            # 生成整段挂 waitUntil 后台跑：客户端中途断开（退后台/闪退）不再
+            # 连坐杀掉生成——后台函数跑完预写+lastAi，离线通知器照常推送。
+            async def _gen():
+                try:
+                    msgs = to_messages(unit, history, tz_offset, lif, contact)
+                    if directive:
+                        msgs.append({"role": "user", "content": directive})
+                    out = await run_chain(msgs)
+                    parsed = parse_chat(out.get("content") or "")
+                    parts = split_reply(unit, out.get("content") or "")
+                    out["content"] = "\n".join(parts)
+                    print(f"chat reply unit={unit} bubbles={len(parts)}")
+                except RuntimeError as e:
+                    print(f"chat failure unit={unit}: {e}")
+                    return False, {"error": str(e)}
+                # 这组 t 是消息的正式身份：随 parts 原样回给前端，发泡/落盘签同一个 t，
+                # 服务端预写与客户端落盘对同一条消息产出同一条镜像记录（合流按 who|text|t 判重）
+                t0 = cloud_npc.now_ms() if parts else 0
+                out["parts"] = [{"text": p, "t": t0 + i} for i, p in enumerate(parts)]
+                try:
+                    if parts:
+                        hist = await _load_hist(self.env, user, unit)
+                        hist.extend({"who": "ai", "pending": True, **q} for q in out["parts"])
+                        await _save_hist(self.env, user, unit, hist)
+                        # 只记 lastAi，不推水位：这条回复还没送到浏览器
+                        await _note_ai(self.env, user, unit, t0 + len(parts) - 1,
+                                       mark_seen=False)
+                except Exception as e:
+                    print(f"[hist] {user}/{unit} reply save failed: {type(e).__name__}: {e}")
+                try:
+                    await life.save(self.env, user, unit, life.apply_chat(lif, parsed, now))
+                except Exception as e:
+                    print(f"[life] {user}/{unit} save failed: {type(e).__name__}: {e}")
+                return True, out
+
+            gen_task = run_in_background(_gen())
+            wait_until(gen_task)
+            ok, out = await gen_task
+            return Response.json(out, status=200 if ok else 502)
 
         # ── 通话点评：挂断后前端把整段转写发来，一次性返回逐句建议 + 总评 ──
         if request.method == "POST" and path.endswith("/call-review"):
