@@ -1,4 +1,4 @@
-import { initChat, fmtRowTime } from "./live.js?v=20261103-4";
+import { initChat, fmtRowTime } from "./live.js?v=20261103-5";
 import { loadContacts } from "./personas.js?v=20261103-4";
 import { setViewerKey } from "./rhythm.js?v=20261024-3";
 import { initCalls } from "./calls.js?v=20261025-1";
@@ -11,6 +11,7 @@ const TAB_OF = { chat: "chats", call: "calls" };
 
 const tabs = [...document.querySelectorAll(".tab")];
 const tabbar = document.querySelector(".tabbar");
+const stage = document.querySelector(".stage");
 
 let current = "chats";
 // initChat 要引用 showView，showView 又要反过来在离开对话页时调它的 close，
@@ -218,6 +219,49 @@ async function setupProfileUI() {
     location.reload();
   });
 }
+// ── Chats 下拉刷新：滚到顶再下拉，重拉镜像合流 + 重画 + 报活 ──
+function initPullRefresh(view, run) {
+  const ptr = document.createElement("div");
+  ptr.className = "ptr";
+  ptr.hidden = true;
+  stage.appendChild(ptr);
+  const THRESHOLD = 56;
+  let startY = 0, dist = 0, pulling = false, busy = false;
+  const hide = () => { pulling = false; dist = 0; ptr.classList.remove("ptr--show"); ptr.hidden = true; };
+  view.addEventListener("touchstart", (e) => {
+    if (busy || view.scrollTop > 0 || e.touches.length !== 1) return;
+    startY = e.touches[0].clientY;
+    pulling = true;
+    dist = 0;
+  }, { passive: true });
+  view.addEventListener("touchmove", (e) => {
+    if (!pulling || busy) return;
+    const dy = e.touches[0].clientY - startY;
+    if (dy <= 0 || view.scrollTop > 0) { hide(); return; }
+    e.preventDefault();
+    dist = Math.min(96, dy);
+    ptr.hidden = false;
+    ptr.classList.add("ptr--show");
+    ptr.textContent = dist >= THRESHOLD ? "Release to refresh" : "Pull to refresh";
+  }, { passive: false });
+  view.addEventListener("touchend", async () => {
+    if (!pulling || busy || dist < THRESHOLD) { hide(); return; }
+    pulling = false;
+    busy = true;
+    ptr.hidden = false;
+    ptr.classList.add("ptr--show");
+    ptr.textContent = "Refreshing…";
+    try { await run(); ptr.textContent = "Updated"; }
+    catch { ptr.textContent = "Refresh failed"; }
+    setTimeout(() => { busy = false; hide(); }, 600);
+  });
+  view.addEventListener("touchcancel", hide);
+}
+
+initPullRefresh(document.getElementById("view-chats"), async () => {
+  await chat.refresh();
+  fetch("/ping", { method: "POST", keepalive: true, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ d: DEV_ID }) }).catch(() => {});
+});
 boot().then(openFromPush);
 setupProfileUI();
 

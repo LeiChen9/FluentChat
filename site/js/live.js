@@ -682,8 +682,8 @@ export function initChat({ show, back, openCall }) {
   }
 
   function prewarmHist() {
-    loadContacts().then((list) => list.forEach((p) => {
-      fetch(`/hist/${p.id}`).then((r) => r.ok ? r.json() : null).then((arr) => {
+    return loadContacts().then((list) => Promise.all(list.map((p) => {
+      return fetch(`/hist/${p.id}`).then((r) => r.ok ? r.json() : null).then((arr) => {
         if (!Array.isArray(arr) || !arr.length) return;
         const key = (i) => `${i.kind || "b"}|${i.id || ""}|${i.who}|${i.text}|${i.t ?? ""}`;
         const local = loadHist(p.id);
@@ -710,7 +710,7 @@ export function initChat({ show, back, openCall }) {
           bumpRow(p.id, last.t || 0);
         }
       }).catch(() => {});
-    }));
+    })));
   }
 
   function pushHist(item) {
@@ -1421,6 +1421,7 @@ export function initChat({ show, back, openCall }) {
   return {
     close: teardown,
     prewarmHist,
+    refresh: async () => { await prewarmHist(); paintDots(); }, // 下拉刷新：拉镜像合流 + 重画状态点
     refreshStatuses: paintDots,
     // 联系人页也从这里进对话
     open: openChat,
