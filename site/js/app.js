@@ -224,17 +224,23 @@ function initPullRefresh(view, run) {
   const ptr = document.createElement("div");
   ptr.className = "ptr";
   stage.appendChild(ptr);
+  // 内容包一层：.view 的入场动画也用 transform，且动画优先级高于内联样式，
+  // 直接位移 view 会被 viewIn 盖掉 —— 位移放在包装层上。
+  const wrap = document.createElement("div");
+  wrap.className = "pullwrap";
+  for (const c of [...view.children]) wrap.appendChild(c);
+  view.append(wrap);
   const THRESHOLD = 56, MAX = 110;
   let startY = 0, dist = 0, pulling = false, busy = false;
   const paint = () => {
-    view.style.transition = "none";
-    view.style.transform = dist ? `translateY(${dist}px)` : "";
+    wrap.style.transition = "none";
+    wrap.style.transform = dist ? `translateY(${dist}px)` : "";
     ptr.style.opacity = dist > 4 ? "1" : "0";
     ptr.style.transform = `rotate(${dist * 3}deg)`;
   };
   const settle = (to, ms) => {
-    view.style.transition = `transform ${ms}ms var(--soft)`;
-    view.style.transform = to ? `translateY(${to}px)` : "";
+    wrap.style.transition = `transform ${ms}ms var(--soft)`;
+    wrap.style.transform = to ? `translateY(${to}px)` : "";
   };
   const reset = () => {
     pulling = false; dist = 0;
