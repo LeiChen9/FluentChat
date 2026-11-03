@@ -5,7 +5,7 @@
 // contact.json：一人一份画像 JSON（name/status/preview/time/avatar + base/burst/hours/glow）。
 // moments.json：动态数组，每条包含 timestamp 和 text。
 
-const IDS = ["leo", "chole", "sam", "Fiona"];
+export const IDS = ["leo", "chole", "sam", "Fiona"];
 const DIR = "assets/contacts/";
 
 async function fetchText(url) {

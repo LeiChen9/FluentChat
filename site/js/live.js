@@ -3,7 +3,7 @@
 // 音频双向：AI 声音在浏览器直接播（24kHz PCM16），麦克风分片上行（16kHz PCM16）。
 // Worker 全程只签 token，不碰音频。
 
-import { loadContacts } from "./personas.js?v=20261024-2";
+import { loadContacts, IDS } from "./personas.js?v=20261103-4";
 import { saveCall, fmtDur } from "./calls.js?v=20261025-1";
 import { statusOf, nextReplyDelay, burstOf, noteReply } from "./rhythm.js?v=20261024-3";
 import { proactiveTick, engageBump, noteUserTalk } from "./proactive.js";
@@ -157,20 +157,28 @@ export function initChat({ show, back, openCall }) {
     sortRows();
   }
   let people = [];
-  // 未读计数（内存）：后台落盘的消息条数，进对应对话清零。刷新即清空
-  const unread = new Map();
-  // 各行总数顺带落在底部 Chats 图标上（微信式）
+  // 未读 = 推导值：AI 消息 t > lastRead 水位（落盘），单一入口重画行角标 + tab 总数
+  const LR_KEY = "fluentchat:lastread:v1";
+  let lastRead = (() => { try { return JSON.parse(localStorage.getItem(LR_KEY) || "{}") || {}; } catch { return {}; } })();
+  const saveLR = () => { try { localStorage.setItem(LR_KEY, JSON.stringify(lastRead)); } catch {} };
   const tabBadge = document.querySelector('.tab[data-view="chats"]')
     ?.appendChild(Object.assign(document.createElement("i"), { className: "tab__badge", hidden: true }));
-  function setBadge(id) {
-    const row = rowOf.get(id);
-    if (row) {
-      const n = unread.get(id) || 0;
-      row.badge.hidden = !n;
-      row.badge.textContent = n;
-    }
+  function markRead(id) {
+    const t = loadHist(id).reduce((m, h) => Math.max(m, h.t || 0), 0);
+    if (t > (lastRead[id] ?? -1)) { lastRead[id] = t; saveLR(); }
+  }
+  function renderUnread() {
     let total = 0;
-    for (const n of unread.values()) total += n;
+    for (const raw of IDS) {
+      const id = `persona-${raw}`;
+      if (lastRead[id] === undefined) markRead(id); // 迁移：首见该会话，存量历史算已读
+      const mark = lastRead[id] || 0;
+      const n = unit?.id === id ? 0 // 在页里看着 = 已读，离开时再收进水位
+        : loadHist(id).filter((h) => h.who === "ai" && !h.hidden && (h.t || 0) > mark).length;
+      total += n;
+      const row = rowOf.get(id);
+      if (row) { row.badge.hidden = !n; row.badge.textContent = n; }
+    }
     if (tabBadge) { tabBadge.hidden = !total; tabBadge.textContent = total; }
   }
   // 状态随时段漂移，列表行的名字点每分钟跟着 rhythm 刷一次
@@ -212,6 +220,7 @@ export function initChat({ show, back, openCall }) {
     }
     sortRows();
     paintDots();
+    renderUnread(); // 行建好后按真源整面重画（修竞态）
     startProactive(); // 名单到齐才开始调度
   });
 
@@ -633,6 +642,7 @@ export function initChat({ show, back, openCall }) {
     }
     // 对话页没开：写进本地历史，回页时自然渲染；列表预览提个醒+置顶
     const arr = loadHist(p.id);
+    if (lastRead[p.id] === undefined) markRead(p.id); // 迁移水位须在新消息落盘前
     for (const t of parts) arr.push({ who: "ai", text: t, t: ts?.shift() ?? Date.now() });
     const KEEP = arr.slice(-HIST_MAX);
     try { localStorage.setItem(HIST_KEY + p.id, JSON.stringify(KEEP)); } catch {}
@@ -643,9 +653,7 @@ export function initChat({ show, back, openCall }) {
       row.preview.textContent = clip(parts[parts.length - 1]);
       row.time.textContent = fmtRowTime(Date.now());
     }
-    // 没看着的消息就是未读
-    unread.set(p.id, (unread.get(p.id) || 0) + 1);
-    setBadge(p.id);
+    renderUnread(); // 未读从 hist+水位推导，不再旁路计数
   }
 
   // ── 历史（本地留存，下次打开还在） ──
@@ -678,18 +686,23 @@ export function initChat({ show, back, openCall }) {
       fetch(`/hist/${p.id}`).then((r) => r.ok ? r.json() : null).then((arr) => {
         if (!Array.isArray(arr) || !arr.length) return;
         const key = (i) => `${i.kind || "b"}|${i.id || ""}|${i.who}|${i.text}|${i.t ?? ""}`;
-        const seen = new Set(loadHist(p.id).map(key));
+        const local = loadHist(p.id);
+        if (lastRead[p.id] === undefined) markRead(p.id); // 迁移：合并前先按存量历史定水位
+        const seen = new Set(local.map(key));
         const news = arr.filter((c) => c && c.who === "ai" && !c.hidden && !seen.has(key(c)));
         let last = null;
         if (!seen.size) { // 本机没历史：整包落盘（预写行顺手清标），老消息不算未读
           const seed = arr.slice(-HIST_MAX).map((c) => c.pending ? { ...c, pending: false } : c);
           try { localStorage.setItem(HIST_KEY + p.id, JSON.stringify(seed)); } catch {}
+          markRead(p.id); // 整包视为已读
           last = arr.filter((h) => !h.hidden && (h.who === "me" || h.who === "ai")).at(-1);
-        } else if (news.length) { // 本机有历史：云端多出的 ai 消息 = 离线未读
-          unread.set(p.id, (unread.get(p.id) || 0) + news.length);
-          setBadge(p.id);
+        } else if (news.length) { // 本机有历史：云端多出的 ai 消息并入真源，未读靠水位推导
+          const merged = [...local, ...news.map((c) => c.pending ? { ...c, pending: false } : c)]
+            .sort((a, b) => (a.t ?? 0) - (b.t ?? 0)).slice(-HIST_MAX);
+          try { localStorage.setItem(HIST_KEY + p.id, JSON.stringify(merged)); } catch {}
           last = news.at(-1);
-        } else return;
+        } else { renderUnread(); return; }
+        renderUnread();
         const row = rowOf.get(p.id);
         if (row && last) {
           row.preview.textContent = clip((last.who === "me" ? "You: " : "") + last.text);
@@ -925,8 +938,8 @@ export function initChat({ show, back, openCall }) {
     teardown();
     const seq = ++openSeq;
     unit = u;
-    unread.delete(u.id); // 进对话 = 看过了
-    setBadge(u.id);
+    markRead(u.id); // 进对话 = 此刻之前全部已读
+    renderUnread();
 
     // 头像直接用 persona 自己的照片，不再靠猫图染色
     avImg.src = u.avatar;
@@ -1035,6 +1048,7 @@ export function initChat({ show, back, openCall }) {
     ws = null;
     playHead = 0;
 
+    if (unit) { markRead(unit.id); renderUnread(); } // 离开时把在页里看过的收进水位
     unit = null;
     mode = "text";
     pendingAi = "";
@@ -1345,6 +1359,7 @@ export function initChat({ show, back, openCall }) {
     cancelReply(u); // 在途回复一起退场，别等清空后落进白纸
     teardown();
     try { localStorage.removeItem(HIST_KEY + u.id); } catch {}
+    lastRead[u.id] = 0; saveLR(); // 白纸会话：水位一并清掉
     await mirrorHist(u.id); // 云端一起清成空表，不然重开会从镜像复活
     openChat(u); // unit 已被 teardown 置空，不会命中「同一个还开着」的早退分支
   }
