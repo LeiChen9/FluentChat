@@ -111,6 +111,15 @@ export function initChat({ show, back, openCall }) {
     if (!wasHidden) return;
     wasHidden = false;
     flushDelivery();
+    // 悬挂救援：iOS 冻结页面时杀掉在途连接，fetch 的 promise 永不 settle，
+    // 超时计时也停摆。回前台发现超龄未决的生成直接丢弃重启，别让它占位。
+    for (const [id, st] of replies) {
+      if (st.gen && st.genAt && Date.now() - st.genAt > 30000) {
+        st.gen = null;
+        const u = people.find((p) => p.id === id);
+        if (u) startGen(u, st);
+      }
+    }
     for (const st of replies.values()) st.batch = true;
     if (!unit) return;
     const st = replies.get(unit.id);
@@ -120,11 +129,7 @@ export function initChat({ show, back, openCall }) {
       if (st.ready) deliverReply(unit, st, true);
     }
     const last = [...hist].reverse().find((i) => i.who === "ai" && i.t);
-    if (last) fetch("/hist/seen", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ unit: unit.id, t: last.t }),
-    }).catch(() => {});
+    if (last) reportSeen(last.t);
   });
 
   // 通话记录：接通后全程攒这里，挂断时落本机账本 + 一条时长系统行。
@@ -373,13 +378,29 @@ export function initChat({ show, back, openCall }) {
     hideTyping();
   }
 
+  // 已读上报唯一出口：气泡落到屏幕 = 用户看到了。服务端（表演完成才算
+  // 已读的新语义）只认这条通道；发完即已读，切走后通知器不再响。
+  function reportSeen(t) {
+    if (!unit) return;
+    if (!t) {
+      const last = [...hist].reverse().find((i) => i.who === "ai" && i.t);
+      if (!last) return;
+      t = last.t;
+    }
+    fetch("/hist/seen", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ unit: unit.id, t }),
+    }).catch(() => {});
+  }
+
   function deliverParts(parts, done, ts, batch = false) {
     const state = { timer: 0, batch };
     delivery = state;
     let i = 0;
     const drip = () => {
       if (delivery !== state) return;
-      if (i >= parts.length) { delivery = null; hideTyping(); done?.(); return; }
+      if (i >= parts.length) { delivery = null; hideTyping(); reportSeen(ts?.[parts.length - 1]); done?.(); return; }
       if (i > 0 && !state.batch) showTyping();
       const sendPart = () => {
         if (delivery !== state) return;
@@ -441,7 +462,8 @@ export function initChat({ show, back, openCall }) {
     invalidateProactive(u);
     let st = replies.get(u.id);
     if (st) return st;
-    st = { texts: [], delay: 0, gen: null, retry: 0, ready: false, text: "", wait: 0, used: 0, req: directive || "", cancelled: false, batch: false };
+    st = { texts: [], delay: 0, gen: null, retry: 0, ready: false, text: "", wait: 0, used: 0, req: directive || "", cancelled: false, batch: false,
+      bid: crypto.randomUUID() }; // 幂等批次：重试同键，服务端不重生成第二份
     replies.set(u.id, st);
     scheduleDelay(u, st);
     queueMicrotask(() => startGen(u, st)); // 留一拍：同栈里先把本条话计入，used 才锁得住带了几条
@@ -460,15 +482,27 @@ export function initChat({ show, back, openCall }) {
     proceedReply(u); // delay=0（话题正热秒回）：文案就绪就立刻进 typing
   }
 
+  // 生成失败可见化：给本批最后一条 me 气泡挂红叹号（.msg--fail），
+  // 点按立即重发；生成就绪/批次作废时摘掉。
+  function failMark(u, on) {
+    if (u !== unit) return;
+    const mine = body.querySelectorAll(".msg--me");
+    const node = mine[mine.length - 1];
+    node?.classList.toggle("msg--fail", on);
+  }
+
   function startGen(u, st) {
     if (st.gen || st.ready) return;
     st.used = st.texts.length; // 这次生成带上的是几条发言（packFor 读 localStorage）
-    st.gen = genChat(u, st.req).then((ret) => {
+    st.genAt = Date.now(); // 回前台悬挂救援的时间基准
+    st.gen = genChat(u, st.req, st.bid).then((ret) => {
       if (st.cancelled) return;
       st.gen = null; st.text = ret.text; st.ts = ret.ts; st.ready = true;
+      failMark(u, false); // 文案就绪：失败标摘掉，等节奏到点进 typing
       if (!st.delay && !st.wait) proceedReply(u);
-    }, () => { // 生成失败不当场放弃：队列还在，缓 8-30 秒按原节奏重试
+    }, () => { // 生成失败不当场放弃：标红叹号可点重发，8-30 秒后台也重试
       st.gen = null;
+      failMark(u, true);
       st.retry = setTimeout(() => { st.retry = 0; if (!st.cancelled) startGen(u, st); }, 8000 + Math.random() * 22000);
     });
   }
@@ -516,6 +550,7 @@ export function initChat({ show, back, openCall }) {
     if (!st) return;
     st.cancelled = true;
     replies.delete(u.id);
+    failMark(u, false); // 批次作废：红叹号摘掉，重发责任交给新批次
     for (const t of [st.delay, st.retry, st.wait]) if (t) clearTimeout(t);
   }
 
@@ -589,28 +624,41 @@ export function initChat({ show, back, openCall }) {
     deliverProactive(p, ret.text, ret.ts);
   }
 
-  // 一发 /chat：本地历史（含刚排队的话）+ 可选指令，模型容灾链给整段回复
-  async function genChat(p, directive) {
-    const res = await fetch("/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        unit: p.id,
-        history: packFor(p),
-        directive: directive || undefined,
-        tz: new Date().getTimezoneOffset(),
-      }),
-    });
-    const data = await res.json();
-    if (!res.ok || !data.content) throw new Error(data.error || `HTTP ${res.status}`);
-    const text = keepLines(data.content);
-    if (!text) throw new Error("blank reply");
-    return { text, ts: (data.parts || []).map((q) => q.t) };
+  // 一发 /chat：本地历史（含刚排队的话）+ 可选指令，模型容灾链给整段回复。
+  // bid = 幂等批次 id：同一批（含重试）服务端只生成一份，掐连接重发不双写。
+  async function genChat(p, directive, bid) {
+    // 20s 封顶：模型链常态 8-12s，iOS 掐连接时 promise 悬挂会杀死重试链，
+    // 超时必 reject 才能进失败分支（重试/标红）而不是永远沉默。
+    // 手动 controller 不用 AbortSignal.timeout：后者计时器不随请求完成释放，
+    // 每次调用都给 event loop 挂一个 20s 尾巴。
+    const ctrl = new AbortController();
+    const kill = setTimeout(() => ctrl.abort(), 20000);
+    try {
+      const res = await fetch("/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: ctrl.signal,
+        body: JSON.stringify({
+          unit: p.id,
+          history: packFor(p),
+          directive: directive || undefined,
+          bid: bid || undefined,
+          tz: new Date().getTimezoneOffset(),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.content) throw new Error(data.error || `HTTP ${res.status}`);
+      const text = keepLines(data.content);
+      if (!text) throw new Error("blank reply");
+      return { text, ts: (data.parts || []).map((q) => q.t) };
+    } finally {
+      clearTimeout(kill);
+    }
   }
 
   async function genProactive(p, retried, epoch) {
     try {
-      const ret = await genChat(p, PRO_REQ);
+      const ret = await genChat(p, PRO_REQ, `pro-${p.id}-${epoch}`);
       proFail.delete(p.id);
       return ret;
     } catch (e) {
@@ -1386,6 +1434,16 @@ export function initChat({ show, back, openCall }) {
     fitInput();
   });
 
+  // 红叹号点按重发：清掉后台重试，立即重新生成（同一 st，同一幂等 bid）
+  body.addEventListener("click", (e) => {
+    if (!e.target.closest?.(".msg--fail")) return;
+    const st = replies.get(unit.id);
+    if (!st || st.gen || st.ready) return;
+    if (st.retry) { clearTimeout(st.retry); st.retry = 0; }
+    failMark(unit, false);
+    startGen(unit, st);
+  });
+
   bar.addEventListener("submit", (e) => {
     e.preventDefault();
     const text = input.value.trim();
@@ -1394,8 +1452,7 @@ export function initChat({ show, back, openCall }) {
     fitInput();
     sendBtn.disabled = true;
     cancelReply(unit);
-    cancelDelivery();
-    const t = Date.now();
+    cancelDelivery();    const t = Date.now();
     if (callRec) {
       // 通话里打的字也算这次通话的转写：进记录 + 隐藏历史，不在 Chat 里冒气泡
       callRec.turns.push({ who: "me", text, t });

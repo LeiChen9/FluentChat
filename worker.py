@@ -559,15 +559,15 @@ def _newest_ai_t(hist: list) -> int:
 
 
 async def _note_ai(env, user: str, unit: str, t: int,
-                   mark_seen: bool | None = None) -> None:
-    """记下该 unit 最新 AI 消息。mark_seen=None 时按在线状态自动推水位；
-    离线只记 lastAi，留给 1 分钟通知器。"""
+                   mark_seen: bool = False) -> None:
+    """记下该 unit 最新 AI 消息。已读水位唯一来源是前端表演完成上报
+    （/hist/seen）：服务端一律不代标 —— 在线代标是个隐藏丢消息点：
+    生成完但页面已走时标了已读，通知器就失去接管抓手，回复躺在档案
+    里永远没人收到。"""
     if not t:
         return
     state = await cloud_npc.load_state(env, user)
     changed = _set_last_ai(state, unit, t)
-    if mark_seen is None:
-        mark_seen = not _offline(state, cloud_npc.now_ms())
     if mark_seen and t > _seen_at(state, unit):
         _mark_seen(state, unit, t)
         changed = True
@@ -735,6 +735,9 @@ class Default(WorkerEntrypoint):
             tz_offset = clamp_tz(body.get("tz"))
             # 可选：主动消息场景的临时指令（最后一条 user 消息，模型照办开口）
             directive = str(body.get("directive") or "").strip()[:400]
+            # 幂等批次 id：iOS 掐连接时同一批消息会重发，bid 相同 = 同一批，
+            # 已预写过的直接返回原文，不再生成第二份（防双回复）
+            bid = str(body.get("bid") or "")[:64]
             print(f"chat request unit={unit} history={len(history)} directive={1 if directive else 0}")
             contact = await _contact(self.env, unit) or {}
             now = cloud_npc.now_ms()
@@ -742,6 +745,17 @@ class Default(WorkerEntrypoint):
             # 生成整段挂 waitUntil 后台跑：客户端中途断开（退后台/闪退）不再
             # 连坐杀掉生成——后台函数跑完预写+lastAi，离线通知器照常推送。
             async def _gen():
+                if bid:
+                    try:
+                        hist = await _load_hist(self.env, user, unit)
+                        dup = [dict(text=str(q.get("text") or ""), t=int(q.get("t") or 0))
+                               for q in hist if q.get("bid") == bid and q.get("t")]
+                        if dup:
+                            print(f"chat idempotent-hit unit={unit} bid={bid[:12]} parts={len(dup)}")
+                            return True, {"content": "\n".join(q["text"] for q in dup),
+                                          "parts": dup}
+                    except Exception as e:
+                        print(f"[hist] {user}/{unit} idempotent check failed: {type(e).__name__}: {e}")
                 try:
                     msgs = to_messages(unit, history, tz_offset, lif, contact)
                     if directive:
@@ -761,7 +775,8 @@ class Default(WorkerEntrypoint):
                 try:
                     if parts:
                         hist = await _load_hist(self.env, user, unit)
-                        hist.extend({"who": "ai", "pending": True, **q} for q in out["parts"])
+                        hist.extend({"who": "ai", "pending": True,
+                                     **({"bid": bid} if bid else {}), **q} for q in out["parts"])
                         await _save_hist(self.env, user, unit, hist)
                         # 只记 lastAi，不推水位：这条回复还没送到浏览器
                         await _note_ai(self.env, user, unit, t0 + len(parts) - 1,
@@ -1123,7 +1138,7 @@ class Default(WorkerEntrypoint):
         payload = {"title": str(contact.get("name") or unit),
                    "body": text if notif == "preview" else "给你发来一条新消息",
                    "unit": unit}
-        keep, gone = [], []
+        keep, gone, printed = [], [], []
         for sub in subs:
             try:
                 res = await env.PUSHER.fetch(
@@ -1136,7 +1151,10 @@ class Default(WorkerEntrypoint):
                     gone.append(sub.get("endpoint"))
                     continue
             except Exception as e:
+                code = 0
                 print(f"[push] banner send failed: {type(e).__name__} {str(e)[:120]}")
+            printed.append(code)
             keep.append(sub)
+        print(f"[push] unit={unit} notif={notif} tries={len(subs)} codes={printed} stale={len(gone)}")
         if gone:
             await _save_subs(env, user, [s for s in keep if s.get("endpoint") not in set(gone)])

@@ -648,6 +648,27 @@ button { font: inherit; color: inherit; }
   color: var(--ink);
 }
 
+/* 生成失败：右下角红叹号徽标，点按重发（live.js failMark） */
+.msg--fail {
+  position: relative;
+  cursor: pointer;
+}
+.msg--fail::after {
+  content: "!";
+  position: absolute;
+  right: -8px;
+  bottom: -4px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #e5484d;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+}
+
 /* 时间分割线（微信式）：两条消息间隔 ≥5 分钟才插，居中灰字 */
 .msg--time {
   align-self: center;

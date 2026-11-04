@@ -103,5 +103,75 @@ async def load_state(env, user: str) -> dict:
         return {}
 
 
+def _max_map(a, b):
+    """两张 per-unit 数值表按取大合并（水位只进不退）。"""
+    out = {}
+    for src in (a, b):
+        if isinstance(src, dict):
+            for k, v in src.items():
+                if isinstance(v, (int, float)) and v > out.get(k, float("-inf")):
+                    out[k] = v
+    return out
+
+
+def _ledger_merge(a, b):
+    """代打台账按日合并：date 新者赢；同日 sent 取大（配额只紧不松）。"""
+    if not isinstance(a, dict):
+        return b if isinstance(b, dict) else None
+    if not isinstance(b, dict):
+        return a
+    out = dict(a)
+    for unit, led in b.items():
+        old = out.get(unit)
+        if not (isinstance(old, dict) and isinstance(led, dict)):
+            out[unit] = led
+            continue
+        da, db = str(old.get("date") or ""), str(led.get("date") or "")
+        if db > da:
+            out[unit] = led
+        elif db == da:
+            out[unit] = {**old, **led,
+                          "sent": max(int(led.get("sent") or 0), int(old.get("sent") or 0))}
+    return out
+
+
 async def save_state(env, user: str, state: dict) -> None:
-    await env.DATA.put(f"{user}/state.json", json.dumps(state, ensure_ascii=False))
+    """单调合并写：落盘前把盘上册重读回来并成一份。
+
+    R2 没有 CAS，读改写有四路人马（ping/away、/chat 预写、hist/seen、
+    两个 cron sweep）在并发——旧快照整册覆盖会把别人刚写的字段回滚掉：
+    lastSeen 被滚旧 → 在线误判离线 → 已读消息又被推，就是这条。合并规则：
+      lastAi/notified 按 unit 取 max；devices 按设备字段取新时间戳；
+      ledger 按日取新（同日 sent 取大）；eng/notif 与未知键取本次值，
+      盘上独有的键保留。剩余交错窗口只剩 put 之间几毫秒，且下次写入自愈。"""
+    try:
+        obj = await env.DATA.get(f"{user}/state.json")
+        disk = json.loads(await obj.text()) if obj is not None else None
+    except Exception:
+        disk = None
+    if not isinstance(disk, dict) or disk is state:
+        await env.DATA.put(f"{user}/state.json", json.dumps(state, ensure_ascii=False))
+        return
+
+    merged = {**disk, **state}
+    for key in ("lastAi", "notified"):
+        m = _max_map(disk.get(key), state.get(key))
+        if m:
+            merged[key] = m
+        else:
+            merged.pop(key, None)
+    da, db = disk.get("devices"), state.get("devices")
+    if isinstance(da, dict) or isinstance(db, dict):
+        devs = dict(da) if isinstance(da, dict) else {}
+        for dev, rec in (db or {}).items():
+            old = devs.get(dev)
+            if isinstance(old, dict) and isinstance(rec, dict):
+                rec = {**old, **{k: v for k, v in rec.items()
+                                 if not isinstance(old.get(k), (int, float))
+                                 or not isinstance(v, (int, float)) or v >= old.get(k)}}
+            devs[dev] = rec
+        merged["devices"] = devs
+    led = _ledger_merge(disk.get("ledger"), state.get("ledger"))
+    if led:
+        merged["ledger"] = led
+    await env.DATA.put(f"{user}/state.json", json.dumps(merged, ensure_ascii=False))
