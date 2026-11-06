@@ -3,5 +3,8 @@
   "main": "index.js",
   "compatibility_date": "2026-10-22",
   "compatibility_flags": ["nodejs_compat"],
-  "workers_dev": false
+  "workers_dev": false,
+
+  // 推送最后一公里一直没有可观测性，横幅弹没弹全靠猜；打开日志一次看清。
+  "observability": { "enabled": true }
 }

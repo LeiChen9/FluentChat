@@ -185,6 +185,13 @@ async def _hist_route(env, user: str, request) -> Response:
         merged = merge_hist(old, hist)
         await env.DATA.put(key, json.dumps(merged, ensure_ascii=False))
         t = _newest_ai_t(merged)
+        # 交付贴账：内容写库 = 屏上活动余温，15s 否决窗与气息窗都认它
+        try:
+            state = await cloud_npc.load_state(env, user)
+            _touch_device(state, "merge", cloud_npc.now_ms(), away=False)
+            await cloud_npc.save_state(env, user, state)
+        except Exception as e:
+            print(f"[hist] {user}/{unit} merge touch failed: {type(e).__name__}: {e}")
         if t:
             try:
                 await _note_ai(env, user, unit, t)
@@ -473,33 +480,60 @@ def _set_last_ai(state: dict, unit: str, t: int) -> bool:
 
 
 def _offline(state: dict, now_ms: float) -> bool:
-    """人不在任何设备上：每台设备独立报心跳/离开，全体过期才算离线。
+    """在场 = 正证据租约：只用「设备最后一次开口距今」判定，/away 一类
+    负信号不参与裁决（iOS PWA 假 hidden 会幽灵 away，只能作记录）。
+    居民任一设备租约未过期 = 在线；全体过期 = 离线。
     devices 缺的老册落到单设备遗留字段（部署灰度窗口内还在唱主角）。"""
     devs = state.get("devices")
     if isinstance(devs, dict) and devs:
         for dev in devs.values():
-            if not isinstance(dev, dict):
-                continue
-            away = dev.get("awayAt")
-            if isinstance(away, (int, float)) and away > 0:
-                continue
-            seen = dev.get("lastSeen")
+            seen = dev.get("lastSeen") if isinstance(dev, dict) else None
             if isinstance(seen, (int, float)) and 0 < seen \
-                    and seen > now_ms - cloud_npc.OFFLINE_MS:
+                    and seen > now_ms - LEASE_MS:
                 return False
-        return True
-    away = state.get("awayAt")
-    if isinstance(away, (int, float)) and away > 0:
         return True
     seen = state.get("lastSeen")
     return not (isinstance(seen, (int, float)) and 0 < seen
-                and seen > now_ms - cloud_npc.OFFLINE_MS)
+                and seen > now_ms - LEASE_MS)
+
+
+# presence 租约：设备最后一次活动到此算在场。需 ≥ 2×前端心跳间隔（60s），
+# 可见页在两次心跳之间永不误判离线；离 app 后横幅最迟 LEASE_MS 到达。
+LEASE_MS = 150_000  # 150s
+
+# 屏上余温否决：任一设备这么近内有过请求，推送让位——防的是「同屏双显」，
+# 不判人在哪。幽灵 blip（iOS 假 hidden）常发生在手指操作余温里，反映了它。
+ACTIVITY_VETO_MS = 15_000
+
+
+# 表演者气息判定：pending 在途期间，任一设备这么近内有过请求（心跳/交付 PUT）
+# = 表演者活着，不接管；气息断（iOS 冻结页面）= 死页，早接管别替它陪等。
+# 45s 与 20s 表演心跳配对：一次错过容错，两次错过判死。
+PRESENCE_STALL_MS = 45_000
+
+
+def _presenter_alive(state: dict, now_ms: float) -> bool:
+    return _recent_activity(state, now_ms, PRESENCE_STALL_MS)
+
+
+def _recent_activity(state: dict, now_ms: float, window_ms: int = ACTIVITY_VETO_MS) -> bool:
+    devs = state.get("devices")
+    if isinstance(devs, dict):
+        for dev in devs.values():
+            seen = dev.get("lastSeen") if isinstance(dev, dict) else None
+            if isinstance(seen, (int, float)) and 0 < seen \
+                    and seen > now_ms - window_ms:
+                return True
+    seen = state.get("lastSeen")
+    return isinstance(seen, (int, float)) and 0 < seen \
+        and seen > now_ms - window_ms
 
 
 def _touch_device(state: dict, dev: str, now_ms: int, away: bool) -> None:
-    """一台设备报一座台账：ping = 在场并清离开；away = 只标自己这台。"""
+    """一台设备报一座台账：开口即续租（ping/away 都是活动证据）；away
+    只作 awayAt 记录，供观测用，不参与在场裁决。"""
     devs = _devices_of(state)
-    devs[dev] = {"lastSeen": 0 if away else now_ms, "awayAt": now_ms if away else 0}
+    devs[dev] = {"lastSeen": now_ms, "awayAt": now_ms if away else 0}
     state["devices"] = devs
 
 
@@ -653,8 +687,48 @@ class Default(WorkerEntrypoint):
                 return Response.json({"error": "t 非法"}, status=400)
             state = await cloud_npc.load_state(self.env, user)
             _mark_seen(state, unit, int(t))
+            _touch_device(state, "merge", cloud_npc.now_ms(), away=False)
             await cloud_npc.save_state(self.env, user, state)
             return Response.json({"ok": True})
+
+        # unseen 交付自报账：落泡时页面在后台（visibilityState=hidden），
+        # 泡落进无人屏。推送决策不信任报账方，闸门自证：
+        #   ① 线程无 pending 在途（或表演者气息已断，hist 自证）；
+        #   ② 15s 内无设备活动（屏上余温否决，幽灵 blip 的缓冲带）。
+        # 被闸住只搁置不打已读水位，交 1 分钟 cron 补发员兜底；推出即记已读。
+        if request.method == "POST" and path.endswith("/hist/unseen"):
+            if not user:
+                return Response.json({"error": "请先登录"}, status=401)
+            try:
+                body = await request.json()
+            except Exception:
+                body = {}
+            unit = str(body.get("unit") or "")
+            t = body.get("t")
+            if not _SAFE_UNIT.match(unit) or not isinstance(t, (int, float)) or t <= 0:
+                return Response.json({"error": "unit/t 非法"}, status=400)
+            state = await cloud_npc.load_state(self.env, user)
+            now_ms = cloud_npc.now_ms()
+            if _recent_activity(state, now_ms):
+                print(f"[unseen] {user}/{unit} deferred=activity")
+                return Response.json({"ok": True, "deferred": True})
+            hist = await _load_hist(self.env, user, unit)
+            if _pending_in_flight(hist, now_ms) \
+                    and _presenter_alive(state, now_ms):
+                print(f"[unseen] {user}/{unit} deferred=pending")
+                return Response.json({"ok": True, "deferred": True})
+            # 同上：无 pending，或表演者已死允许接管批尾（offline=True）
+            newest = _newest_ai(hist, now_ms, offline=True)
+            if newest is None or int(newest["t"]) <= _seen_at(state, unit):
+                print(f"[unseen] {user}/{unit} deferred=gates")
+                await cloud_npc.save_state(self.env, user, state)
+                return Response.json({"ok": True, "deferred": True})
+            await self._push(self.env, user, unit, {"name": NAMES.get(unit, unit)},
+                             str(newest.get("text") or ""))
+            _mark_seen(state, unit, int(newest["t"]))
+            _touch_device(state, "merge", cloud_npc.now_ms(), away=False)
+            await cloud_npc.save_state(self.env, user, state)
+            return Response.json({"ok": True, "pushed": True})
 
         # 心跳：每台设备每 3 分钟报到一次（前端带设备 id）。cron 只代打给
         # 「所有设备都断了」的用户，别跟浏览器自己的抽签叠着发。
@@ -841,9 +915,15 @@ class Default(WorkerEntrypoint):
             au = str(keys.get("auth") or "")
             if not endpoint.startswith("https://") or not dh or not au:
                 return Response.json({"error": "订阅缺 endpoint/keys(p256dh,auth)"}, status=400)
-            subs = [dict(s) for s in await _load_subs(self.env, user) if s.get("endpoint") != endpoint][:19]
-            subs.append({"endpoint": endpoint, "keys": {"p256dh": dh, "auth": au}})
+            dev = str(body.get("d") or "")[:64]
+            subs = [dict(s) for s in await _load_subs(self.env, user)
+                    if s.get("endpoint") != endpoint
+                    and not (dev and s.get("d") == dev)
+                    and not (dev and not s.get("d"))][:19]
+            subs.append({"endpoint": endpoint, "keys": {"p256dh": dh, "auth": au},
+                         **({"d": dev} if dev else {})})
             await _save_subs(self.env, user, subs)
+            print(f"[push] {user} subscribe d={dev or '-'} total={len(subs)}")
             return Response.json({"ok": True, "count": len(subs)})
 
         # ── 通知偏好：iOS 消息设置三档 ──
@@ -963,8 +1043,10 @@ class Default(WorkerEntrypoint):
         else:
             await self._cron_sweep(env, now=now)
 
-    # 1 分钟通知器：只处理离线用户的新 AI 消息，来源不分主动/回复。
-    # 平时每人只读 1 个 state；只有 lastAi 超过水位才读 hist + 推送。
+    # 1 分钟通知补发员：事件管线（/hist/unseen inline 直推）之后只兜没赶上
+    # 的行——页面报账失败、被屏上余温否决、页面死透的 pending。真源是每线
+    # 已读位点，不再判全人在不在。两道闸同一套：批次没落完不抢跑；15s 内
+    # 有设备活动不推同屏。
     async def _notify_sweep(self, env, now: float) -> None:
         bind_worker_env(env)
         auth.bind_r2(env)
@@ -972,7 +1054,7 @@ class Default(WorkerEntrypoint):
         users = await _load_users(env)
         for user in users:
             state = await cloud_npc.load_state(env, user)
-            if not _offline(state, now_ms):
+            if _recent_activity(state, now_ms):
                 continue
             changed = False
             for unit in PERSONAS:
@@ -982,6 +1064,14 @@ class Default(WorkerEntrypoint):
                 if last and last <= _seen_at(state, unit):
                     continue
                 hist = await _load_hist(env, user, unit)
+                if _pending_in_flight(hist, now_ms) \
+                        and _presenter_alive(state, now_ms):
+                    rows = _ai_rows(hist)
+                    print(f"[sweep] hold {user}/{unit} last={_last_ai(state, unit)} "
+                          f"seen={_seen_at(state, unit)} pendingT={int(rows[0]['t']) if rows else 0}")
+                    continue  # 批次在途且表演者气息在：不抢跑；气息断早接管
+                # 走到这里 = 无 pending，或 pending 但表演者已死（offline=True
+                # 允许接管批尾 pending 行，不用陪等 10 分钟）
                 newest = _newest_ai(hist, now_ms, offline=True)
                 if newest is None:
                     continue
@@ -1134,11 +1224,12 @@ class Default(WorkerEntrypoint):
             return
         subs = await _load_subs(env, user)
         if not subs:
+            print(f"[push] {user}/{unit} no subscriptions")
             return
         payload = {"title": str(contact.get("name") or unit),
                    "body": text if notif == "preview" else "给你发来一条新消息",
                    "unit": unit}
-        keep, gone, printed = [], [], []
+        keep, gone, results = [], [], []
         for sub in subs:
             try:
                 res = await env.PUSHER.fetch(
@@ -1147,14 +1238,14 @@ class Default(WorkerEntrypoint):
                     body=json.dumps({"subscription": sub, "payload": payload}, ensure_ascii=False))
                 res = await res.json()
                 code = int(res.get("statusCode") or 0)
-                if code in (404, 410):
-                    gone.append(sub.get("endpoint"))
-                    continue
             except Exception as e:
                 code = 0
                 print(f"[push] banner send failed: {type(e).__name__} {str(e)[:120]}")
-            printed.append(code)
+            results.append((sub.get("d") or "-", str(sub.get("endpoint") or "")[-8:], code))
+            if code in (404, 410):
+                gone.append(sub.get("endpoint"))
+                continue
             keep.append(sub)
-        print(f"[push] unit={unit} notif={notif} tries={len(subs)} codes={printed} stale={len(gone)}")
+        print(f"[push] {user}/{unit} notif={notif} targets={results} stale={len(gone)}")
         if gone:
             await _save_subs(env, user, [s for s in keep if s.get("endpoint") not in set(gone)])

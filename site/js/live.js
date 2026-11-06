@@ -107,6 +107,7 @@ export function initChat({ show, back, openCall }) {
   let wasHidden = false; // 切走过再回来：在途回复直接落完，不再表演打字
 
   document.addEventListener("visibilitychange", () => {
+    syncReplyBeats();
     if (document.visibilityState === "hidden") { wasHidden = true; return; }
     if (!wasHidden) return;
     wasHidden = false;
@@ -301,6 +302,30 @@ export function initChat({ show, back, openCall }) {
     typingEl = null;
   }
 
+  // 表演在途必须出声：等节奏/生成/落泡整段每 20s 续租。只在可见页发心跳，
+  // 退后台立即停气；服务端 45s 后按死页接管，不替冻结页陪等。
+  const laneDevice = () => { try { return localStorage.getItem("fluentchat:device") || "lane"; } catch { return "lane"; } };
+  function startLaneHeartbeat() {
+    const tick = () => {
+      if (document.visibilityState !== "visible") return;
+      fetch("/ping", { method: "POST", keepalive: true,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ d: laneDevice() }) }).catch(() => {});
+    };
+    tick();
+    return setInterval(tick, 20_000); // 气息窗 45s：两次错过即判死，一拍斜率容忍
+  }
+
+  // 气息只属于「当前可见对话」：切走或退后台立即停，别的人/线程照常交通知轨。
+  function syncReplyBeats() {
+    const visible = document.visibilityState === "visible";
+    for (const [id, st] of replies) {
+      const want = visible && unit?.id === id;
+      if (want && !st.beat) st.beat = startLaneHeartbeat();
+      else if (!want && st.beat) { clearInterval(st.beat); st.beat = 0; }
+    }
+  }
+
   // 转写分片合并。开场白「只显示最后一段」的根因：服务端给的是增量分片，
   // 旧代码整轮覆盖写，只剩最后一片。这里按内容猜服务端语义：
   // 新包含旧文 → 整轮累计（覆盖）；旧文含新包 → 重复（丢）；否则 → 增量（拼）。
@@ -374,20 +399,23 @@ export function initChat({ show, back, openCall }) {
   function cancelDelivery() {
     if (!delivery) return;
     if (delivery.timer) clearTimeout(delivery.timer);
+    if (delivery.laneBeat) clearInterval(delivery.laneBeat);
     delivery = null;
     hideTyping();
   }
 
-  // 已读上报唯一出口：气泡落到屏幕 = 用户看到了。服务端（表演完成才算
-  // 已读的新语义）只认这条通道；发完即已读，切走后通知器不再响。
+  // 已读上报唯一出口：已读 = 看着屏落下的泡。已读=注意力：页面在后台
+  // 照样落泡（iOS 节流但活着），无人看就报 /hist/unseen，让通知轨按每线
+  // 位点接管横幅（服务端两道闸自证，不信任报账方）；回前台重开会补报。
   function reportSeen(t) {
     if (!unit) return;
+    const seeing = document.visibilityState === "visible";
     if (!t) {
       const last = [...hist].reverse().find((i) => i.who === "ai" && i.t);
       if (!last) return;
       t = last.t;
     }
-    fetch("/hist/seen", {
+    fetch(seeing ? "/hist/seen" : "/hist/unseen", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ unit: unit.id, t }),
@@ -397,10 +425,12 @@ export function initChat({ show, back, openCall }) {
   function deliverParts(parts, done, ts, batch = false) {
     const state = { timer: 0, batch };
     delivery = state;
+    state.laneBeat = startLaneHeartbeat();
     let i = 0;
     const drip = () => {
       if (delivery !== state) return;
-      if (i >= parts.length) { delivery = null; hideTyping(); reportSeen(ts?.[parts.length - 1]); done?.(); return; }
+      if (i >= parts.length) { clearInterval(state.laneBeat); delivery = null;
+        hideTyping(); reportSeen(ts?.[parts.length - 1]); done?.(); return; }
       if (i > 0 && !state.batch) showTyping();
       const sendPart = () => {
         if (delivery !== state) return;
@@ -465,6 +495,7 @@ export function initChat({ show, back, openCall }) {
     st = { texts: [], delay: 0, gen: null, retry: 0, ready: false, text: "", wait: 0, used: 0, req: directive || "", cancelled: false, batch: false,
       bid: crypto.randomUUID() }; // 幂等批次：重试同键，服务端不重生成第二份
     replies.set(u.id, st);
+    syncReplyBeats();
     scheduleDelay(u, st);
     queueMicrotask(() => startGen(u, st)); // 留一拍：同栈里先把本条话计入，used 才锁得住带了几条
     return st;
@@ -529,6 +560,7 @@ export function initChat({ show, back, openCall }) {
   function deliverReply(u, st, batch = st.batch) {
     const text = st.text; // genChat 落库前已 keepLines：换行要留住
     replies.delete(u.id);
+    if (st.beat) { clearInterval(st.beat); st.beat = 0; }
     if (!text) return;
     if (unit !== u || mode !== "text") { deliverProactive(u, text, st.ts); return; }
     lastAiAt = Date.now(); // 回话落地 = 话题正热的参照点
@@ -749,6 +781,21 @@ export function initChat({ show, back, openCall }) {
             .sort((a, b) => (a.t ?? 0) - (b.t ?? 0)).slice(-HIST_MAX);
           try { localStorage.setItem(HIST_KEY + p.id, JSON.stringify(merged)); } catch {}
           last = news.at(-1);
+        } else if (arr.some((c) => c && c.who === "ai" && c.pending)) {
+          // 孤儿 pending：本机已有同键行（键对齐但 pending 位滞留），按本机
+          // 事实清过的整包回写——服务端从此不捧「永远在途」的死批次
+          const lset = new Set(local.map(key));
+          const settled = arr.slice(-HIST_MAX)
+            .map((c) => (lset.has(key(c)) && c.pending) ? { ...c, pending: false } : c);
+          if (settled.some((c) => c.pending === false)) {
+            fetch(`/hist/${p.id}`, {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(settled),
+            }).catch(() => {});
+          }
+          renderUnread();
+          return;
         } else { renderUnread(); return; }
         renderUnread();
         const row = rowOf.get(p.id);
@@ -986,6 +1033,7 @@ export function initChat({ show, back, openCall }) {
     teardown();
     const seq = ++openSeq;
     unit = u;
+    syncReplyBeats();
     markRead(u.id); // 进对话 = 此刻之前全部已读
     renderUnread();
 
@@ -1064,6 +1112,10 @@ export function initChat({ show, back, openCall }) {
             body: JSON.stringify({ unit: u.id, t: seenT }),
           }).catch(() => {});
         }
+        // 水位兜底：收没收新行都把本地 AI 尾号交给服务端——水位从不欠账，
+        // 防「行已在本机、服务器 lastAi>seen 永久欠款 → sweep 推屏上已有消息」
+        const tail = [...hist].reverse().find((it) => it.who === "ai" && it.t);
+        if (tail && document.visibilityState === "visible") reportSeen(tail.t);
       }
     }
     if (!statusTimer) statusTimer = setInterval(showStatus, 30000);
@@ -1098,6 +1150,7 @@ export function initChat({ show, back, openCall }) {
 
     if (unit) { markRead(unit.id); renderUnread(); } // 离开时把在页里看过的收进水位
     unit = null;
+    syncReplyBeats();
     mode = "text";
     pendingAi = "";
     pendingMe = "";

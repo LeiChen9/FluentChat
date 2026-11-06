@@ -1,4 +1,4 @@
-import { initChat, fmtRowTime } from "./live.js?v=20261103-5";
+import { initChat, fmtRowTime } from "./live.js?v=20261105-2";
 import { loadContacts } from "./personas.js?v=20261103-4";
 import { setViewerKey } from "./rhythm.js?v=20261024-3";
 import { initCalls } from "./calls.js?v=20261025-1";
@@ -139,21 +139,17 @@ function startHeartbeat() {
       body: JSON.stringify({ d: DEV_ID }) }).catch(() => {});
   };
   beat();
-  setInterval(beat, 3 * 60_000);
+  setInterval(beat, 60_000); // lease 工期一半：租约 ≥ 2×心跳，可见页不误判
 }
 
-// ── 离开/回来信号：切后台、锁屏、关页都算「这台设备的人不在」──
-const awayBeacon = (d) => navigator.sendBeacon?.("/away",
-  new Blob([JSON.stringify({ d })], { type: "application/json" }));
+// ── 回来信号：通知轨（每线 seen/unseen 自报账）不再负向判在场；心跳只剩
+// 为 cron 代打让渡判定续租，awayBeacon 整条退役（服务端端点供旧缓存兼容）。──
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "hidden") {
-    awayBeacon(DEV_ID);
-  } else {
+  if (document.visibilityState !== "hidden") {
     fetch("/ping", { method: "POST", keepalive: true, headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ d: DEV_ID }) }).catch(() => {});
   }
 });
-window.addEventListener("pagehide", () => { awayBeacon(DEV_ID); });
 window.addEventListener("pageshow", () => {
   fetch("/ping", { method: "POST", keepalive: true, headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ d: DEV_ID }) }).catch(() => {});
@@ -399,7 +395,7 @@ async function ensurePush() {
     const subJson = (json && Object.keys(json).length)
       ? json
       : { endpoint: sub.endpoint, keys: { p256dh: b64u(sub.getKey("p256dh")), auth: b64u(sub.getKey("auth")) } };
-    res = await fetch("/push/subscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(subJson) });
+    res = await fetch("/push/subscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...subJson, d: DEV_ID }) });
     // 先试 JSON（后端错误是 {"error": "..."}），解不出再回退 raw 文本
     if (!res.ok) {
       let detail;

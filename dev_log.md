@@ -367,3 +367,13 @@ npx wrangler deploy                  # 改了 site/ 必须部署，workers.dev �
 - 清理：删 `pendingPractice` 状态、`practice.js` 的 loading/finally/JSON 兜底、重复 history 分支；`.view` 改为内部滚动，tabbar 固定。
 - 验证：`tools/smoke.mjs` 覆盖场景卡渲染、练习卡发起 `/token(practice)`、通话浮层；`node --check`、`py_compile` 通过。部署 Version `e5c8cb6e`。
 - 未接：语音配额计量、`learn.json` 进度、练习完成率。
+
+## 消息链收案：推送端到端证实 + 表演者气息补齐（2026-11-05）
+
+- 端到端首次证实：riceball 14:50 生成、14:51:49 推送，Apple `201,201`；用户真机看到横幅。当前设备 `d828…`，端点尾号 `YXTu67Yo`。此前“19 分钟没回”是订阅失效：账号里 2 条无设备 ID 的旧端点，当前设备未登记；`201` 只代表 Apple 入队。
+- 监控升级：`[push]` 改为 `[push] user/unit ... targets=[(d, ep尾号, code)]`；`/push/subscribe` 记 `subscribe d=... total=...`；`/hist/unseen` 记 `deferred=pending`。API `6665d0a4`，pusher `2ae4171e`（observability on）。
+- 订阅生命周期：订阅带 `d`（设备 ID）；同设备旧端点替换；带 `d` 的订阅落地时清掉无 `d` 的遗留端点。riceball 已清到只剩当前设备 1 条。
+- 表演者气息：20s lane heartbeat 从 `beginReply` 起覆盖节奏延迟/生成/落泡；只对当前可见对话续租，切走/退后台立即停。修复 45s 气息窗 < 60s 全局心跳造成的“看屏等回复被误判死页”空窗；`cancelDelivery` 补清 heartbeat。
+- R2 直读：新 wrangler 默认本地；生产读必须 `--remote` + `CLOUDFLARE_ACCOUNT_ID`，已验证。
+- 复核：`py_compile` / `node --check` 过；`smoke.mjs` 有随机 busy 抽样导致的既有 flaky（同代码偶发 `reply lost: 0`），本次有完整 PASS 记录。
+- 残留：`_presenter_alive` 仍是用户级，别的线程的 pending 会等本线程气息断才推；Apple `201` 仍无投递回执。
