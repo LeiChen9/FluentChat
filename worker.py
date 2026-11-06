@@ -425,6 +425,52 @@ async def _save_hist(env, user: str, unit: str, hist: list) -> None:
                        json.dumps(hist[-HIST_MAX_STORE:], ensure_ascii=False))
 
 
+def _prune_pending(hist: list, bid: str) -> list:
+    """回收被取代回合尚未落定的预写行：只删没送到任何设备的 pending，
+    已落定（pending=False，含该 bid 已送达）的原样保留。latest-state 不变量
+    下新消息上位，旧回合未上屏的气泡不该再复活。"""
+    return [e for e in hist if not (e.get("bid") == bid and e.get("pending"))]
+
+
+def _reply_owed(hist: list) -> bool:
+    """屏幕最新一条是不是「欠着没回」的用户消息。latest-state 不变量下，
+    欠回复时该由对话线回答，代打不该插进去重讲旧话题。"""
+    committed = [e for e in hist if isinstance(e, dict) and e.get("t")
+                 and not e.get("pending") and e.get("who") in ("me", "ai")]
+    if not committed:
+        return False
+    return max(committed, key=lambda e: int(e["t"])).get("who") == "me"
+
+
+def _turn_rec(state: dict, unit: str) -> list:
+    rec = (state.get("activeTurn") or {}).get(unit)
+    return rec if isinstance(rec, list) and rec else [None, 0]
+
+
+async def _claim_turn(env, user: str, unit: str, bid: str, at: float) -> str | None:
+    """认领活动回合：本 bid 上位为 (user,unit) 唯一有权落库的在途回合，
+    返回被取代的旧 bid（调用方据此回收其未落定预写）。
+
+    at 必须是**请求到达**的时刻而非后台跑完的时刻——否则旧 bid 的后台生成
+    迟到执行时会用更大的墙钟把更新的活动回合顶下去，反向选错。"""
+    state = await cloud_npc.load_state(env, user)
+    prev = _turn_rec(state, unit)[0]
+    state.setdefault("activeTurn", {})[unit] = [bid, at]
+    await cloud_npc.save_state(env, user, state)
+    return prev
+
+
+async def _turn_at(env, user: str, unit: str) -> tuple[str | None, int]:
+    state = await cloud_npc.load_state(env, user)
+    rec = _turn_rec(state, unit)
+    return rec[0], int(rec[1] or 0)
+
+
+async def _is_active_turn(env, user: str, unit: str, bid: str) -> bool:
+    """写前判活动：迟到的、被更新回合取代的结果一律不许落库。"""
+    return (await _turn_at(env, user, unit))[0] == bid
+
+
 def _hist_key(entry: dict) -> str:
     """消息身份键，与 live.js 的 key() 逐字段对齐：kind|id|who|text|t。"""
     t = entry.get("t")
@@ -830,6 +876,19 @@ class Default(WorkerEntrypoint):
                                           "parts": dup}
                     except Exception as e:
                         print(f"[hist] {user}/{unit} idempotent check failed: {type(e).__name__}: {e}")
+                # 认领活动回合：本 bid 上位为这条会话唯一有权落库的在途回合；
+                # 被它取代的旧回合，其未落定预写作废回收（latest-state / single-turn）。
+                # 幂等命中已在上面 return，能走到这里必是一次新生成。
+                if bid:
+                    try:
+                        prev = await _claim_turn(self.env, user, unit, bid, now)
+                        if prev and prev != bid:
+                            h = await _load_hist(self.env, user, unit)
+                            hp = _prune_pending(h, prev)
+                            if len(hp) != len(h):
+                                await _save_hist(self.env, user, unit, hp)
+                    except Exception as e:
+                        print(f"[turn] {user}/{unit} claim failed: {type(e).__name__}: {e}")
                 try:
                     msgs = to_messages(unit, history, tz_offset, lif, contact)
                     if directive:
@@ -846,6 +905,16 @@ class Default(WorkerEntrypoint):
                 # 服务端预写与客户端落盘对同一条消息产出同一条镜像记录（合流按 who|text|t 判重）
                 t0 = cloud_npc.now_ms() if parts else 0
                 out["parts"] = [{"text": p, "t": t0 + i} for i, p in enumerate(parts)]
+                # 写前判活动：本回合已被更新的消息取代 → 丢弃，既不预写也不推
+                # lastAi/生活账。客户端此刻已 abort、已作废上屏，滞后回复若落库
+                # 只会在下次预温复活成重复。回包照旧返回，客户端自己按 cancelled 弃用。
+                if bid:
+                    try:
+                        if not await _is_active_turn(self.env, user, unit, bid):
+                            print(f"chat superseded unit={unit} bid={bid[:12]} discard")
+                            return True, out
+                    except Exception as e:
+                        print(f"[turn] {user}/{unit} active check failed: {type(e).__name__}: {e}")
                 try:
                     if parts:
                         hist = await _load_hist(self.env, user, unit)
@@ -1125,9 +1194,14 @@ class Default(WorkerEntrypoint):
                     continue
                 # 代打让渡：批尾有未过接管时限的预写（隐身页在途或刚替我们
                 # 生成了），这一格不抽、不扣名额；下一 tick 再说。
-                if _pending_in_flight(await _load_hist(env, user, unit),
-                                      now * 1000.0):
+                # latest-state 不变量下再加一道：屏幕最新一条若是欠着的用户
+                # 消息，这格也让位——那本该是对话线回答它，不是代打插话重讲旧话题。
+                hist_now = await _load_hist(env, user, unit)
+                if _pending_in_flight(hist_now, now * 1000.0):
                     diag.append({"unit": unit, "yield": "pending in flight"})
+                    continue
+                if _reply_owed(hist_now):
+                    diag.append({"unit": unit, "yield": "reply owed"})
                     continue
                 led = ledgers.get(unit)
                 led = led if isinstance(led, dict) else {}
@@ -1194,7 +1268,8 @@ class Default(WorkerEntrypoint):
     async def _proactive(self, env, user: str, unit: str, contact: dict) -> int | None:
         try:
             hist = await _load_hist(env, user, unit)
-            now = cloud_npc.now_ms()
+            seed = cloud_npc.now_ms()
+            now = seed
             lif = life.settle(await life.load(env, user, unit), contact, now)
             msgs = to_messages(unit, sanitize_history(hist), DEFAULT_TZ_OFFSET, lif, contact)
             msgs.append({"role": "user", "content": PRO_REQ})
@@ -1204,9 +1279,19 @@ class Default(WorkerEntrypoint):
             return None  # 名额已扣；下一天/下一 tick 再说
         if not parts:
             return None
+        # 代打也是「一个回合」：认领活动回合后，被用户新消息取代就整段丢弃——
+        # 生成期间你回了话，这条插话就不该再落库（和 /chat 同一纪律，单一原则）。
+        bid = f"cron-{int(seed)}"
+        try:
+            await _claim_turn(env, user, unit, bid, seed)
+            if not await _is_active_turn(env, user, unit, bid):
+                print(f"[cron] {user}/{unit} proactive superseded at write: discard")
+                return None
+        except Exception as e:
+            print(f"[turn] cron {user}/{unit} claim failed: {type(e).__name__}: {e}")
         # 只落库：推送由 1 分钟通知器统一按「离线 + 水位」发
         t0 = cloud_npc.now_ms()
-        hist.extend({"who": "ai", "text": part, "t": t0 + i}
+        hist.extend({"who": "ai", "text": part, "t": t0 + i, "bid": bid}
                     for i, part in enumerate(parts))
         await _save_hist(env, user, unit, hist)
         return t0 + len(parts) - 1

@@ -2,7 +2,8 @@
 
 分工：前端页开着时浏览器每分钟抽签（localStorage 账本）；页面关闭（心跳停）
 即由 scheduled cron 每 5 分钟来撞这里。云册合一份 state.json：
-{"lastSeen": 毫秒, "ledger": {persona_id: {date, sent, lastAt}}}。
+{"lastSeen": 毫秒, "ledger": {persona_id: {date, sent, lastAt}},
+ "activeTurn": {persona_id: [bid, 认领毫秒]}}。
 
 与浏览器账本不同册：云册只在离线期记账，两册各倒各的名额 —— 一天的总主动
 频率可能高于浏览器单册（可接受，dev_log 有记）。作息真源仍是 contact.json
@@ -135,6 +136,22 @@ def _ledger_merge(a, b):
     return out
 
 
+def _turn_merge(a, b):
+    """活动回合账按 unit 取新：同一线并发写只保留认领毫秒更大的在途 bid。
+
+    一条会话只认一个活动回合（latest-state / single-turn），谁后认领谁有
+    权落库；旧回合的迟到结果由调用方判活动后丢弃，绝不双写。"""
+    out = dict(a) if isinstance(a, dict) else {}
+    if isinstance(b, dict):
+        for unit, rec in b.items():
+            old = out.get(unit)
+            new_at = rec[1] if isinstance(rec, list) and len(rec) > 1 else 0
+            old_at = old[1] if isinstance(old, list) and len(old) > 1 else -1
+            if not (isinstance(old, list) and old_at >= new_at):
+                out[unit] = rec
+    return out or None
+
+
 async def save_state(env, user: str, state: dict) -> None:
     """单调合并写：落盘前把盘上册重读回来并成一份。
 
@@ -174,4 +191,7 @@ async def save_state(env, user: str, state: dict) -> None:
     led = _ledger_merge(disk.get("ledger"), state.get("ledger"))
     if led:
         merged["ledger"] = led
+    at = _turn_merge(disk.get("activeTurn"), state.get("activeTurn"))
+    if at:
+        merged["activeTurn"] = at
     await env.DATA.put(f"{user}/state.json", json.dumps(merged, ensure_ascii=False))

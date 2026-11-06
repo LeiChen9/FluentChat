@@ -526,13 +526,14 @@ export function initChat({ show, back, openCall }) {
     if (st.gen || st.ready) return;
     st.used = st.texts.length; // 这次生成带上的是几条发言（packFor 读 localStorage）
     st.genAt = Date.now(); // 回前台悬挂救援的时间基准
-    st.gen = genChat(u, st.req, st.bid).then((ret) => {
+    st.gen = genChat(u, st.req, st.bid, st).then((ret) => {
       if (st.cancelled) return;
       st.gen = null; st.text = ret.text; st.ts = ret.ts; st.ready = true;
       failMark(u, false); // 文案就绪：失败标摘掉，等节奏到点进 typing
       if (!st.delay && !st.wait) proceedReply(u);
     }, () => { // 生成失败不当场放弃：标红叹号可点重发，8-30 秒后台也重试
       st.gen = null;
+      if (st.cancelled) return; // abort/作废：别标红、别挂后台重试
       failMark(u, true);
       st.retry = setTimeout(() => { st.retry = 0; if (!st.cancelled) startGen(u, st); }, 8000 + Math.random() * 22000);
     });
@@ -568,20 +569,24 @@ export function initChat({ show, back, openCall }) {
     const parts = sliceReply(text, u.maxSentences).filter(Boolean);
     deliverParts(parts, () => {
         showStatus();
-        // 生成期间用户又开了口：剩下的照常流程再回一轮（话没丢，话题正热秒回）
-        const extra = st.texts.length - st.used;
-        if (extra > 0) { const st2 = beginReply(u); for (let k = 0; k < extra; k++) st2.texts.push(""); }
+        // 生成期间用户开了口 → submit 已 cancelReply 作废本回合、拿完整历史重开一轮
+        // （latest-state / single-turn）；能走到这里的回合已是活动的最新一条，不再补轮。
         examBurst(u);
     }, st.ts, batch);
   }
 
-  // 拆掉某人的在途回复（Reset 清历史时用）：定时器全清，状态退场
+  // 拆掉某人的在途回复（新消息上位 / Reset 清历史时用）：latest-state 不变量
+  // 的「掐掉旧回合」半句——abort 在途 /chat、撤未上屏气泡、清定时器，状态退场。
+  // 已上屏的算进历史（INV-3 不回收），新回合拿此刻完整历史重开。
   function cancelReply(u) {
     invalidateProactive(u);
+    cancelDelivery();
     const st = replies.get(u.id);
     if (!st) return;
     st.cancelled = true;
     replies.delete(u.id);
+    if (st.ctrl) { try { st.ctrl.abort(); } catch {} st.ctrl = null; }
+    if (st.beat) { clearInterval(st.beat); st.beat = 0; }
     failMark(u, false); // 批次作废：红叹号摘掉，重发责任交给新批次
     for (const t of [st.delay, st.retry, st.wait]) if (t) clearTimeout(t);
   }
@@ -658,13 +663,14 @@ export function initChat({ show, back, openCall }) {
 
   // 一发 /chat：本地历史（含刚排队的话）+ 可选指令，模型容灾链给整段回复。
   // bid = 幂等批次 id：同一批（含重试）服务端只生成一份，掐连接重发不双写。
-  async function genChat(p, directive, bid) {
+  async function genChat(p, directive, bid, st) {
     // 20s 封顶：模型链常态 8-12s，iOS 掐连接时 promise 悬挂会杀死重试链，
     // 超时必 reject 才能进失败分支（重试/标红）而不是永远沉默。
     // 手动 controller 不用 AbortSignal.timeout：后者计时器不随请求完成释放，
     // 每次调用都给 event loop 挂一个 20s 尾巴。
     const ctrl = new AbortController();
     const kill = setTimeout(() => ctrl.abort(), 20000);
+    if (st) st.ctrl = ctrl; // 交回批次：新消息上位时 cancelReply 直接 abort 在途请求
     try {
       const res = await fetch("/chat", {
         method: "POST",
@@ -685,6 +691,7 @@ export function initChat({ show, back, openCall }) {
       return { text, ts: (data.parts || []).map((q) => q.t) };
     } finally {
       clearTimeout(kill);
+      if (st) st.ctrl = null;
     }
   }
 
@@ -1504,8 +1511,10 @@ export function initChat({ show, back, openCall }) {
     input.value = "";
     fitInput();
     sendBtn.disabled = true;
+    // latest-state / single-turn：先掐掉在途回合（abort /chat + 撤未上屏），
+    // 再把这句计入历史，随后 beginReply 拿此刻完整历史开唯一的新回合。
     cancelReply(unit);
-    cancelDelivery();    const t = Date.now();
+    const t = Date.now();
     if (callRec) {
       // 通话里打的字也算这次通话的转写：进记录 + 隐藏历史，不在 Chat 里冒气泡
       callRec.turns.push({ who: "me", text, t });

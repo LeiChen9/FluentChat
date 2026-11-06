@@ -1,4 +1,4 @@
-import { initChat, fmtRowTime } from "./live.js?v=20261105-2";
+import { initChat, fmtRowTime } from "./live.js?v=20261106-1";
 import { loadContacts } from "./personas.js?v=20261103-4";
 import { setViewerKey } from "./rhythm.js?v=20261024-3";
 import { initCalls } from "./calls.js?v=20261025-1";
