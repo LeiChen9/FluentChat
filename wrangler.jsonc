@@ -25,6 +25,10 @@
   "kv_namespaces": [
     { "binding": "SUBS", "id": "40f6ba9fc2bc41d98c503f65479d4076" }
   ],
+  // D1：消息链唯一真源（schema.sql）。创建后把 database_id 填进来。
+  "d1_databases": [
+    { "binding": "DB", "database_name": "fluentchat", "database_id": "62ecd09a-b902-4d1f-a739-13d07d4d928d" }
+  ],
   // 用户私有数据：users.json + {user}/hist|state|subs（backend/auth.py）。
   // 私有 bucket，一律经 Worker 读写，不开公开 URL。
   "r2_buckets": [

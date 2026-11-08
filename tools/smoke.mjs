@@ -1,11 +1,7 @@
-// 冒烟测试：不依赖浏览器，用 DOM / AudioContext / WebSocket 的桩把
-// 站点的完整交互跑一遍 —— 进聊天页 → setupComplete → 转写分片攒轮、
-// turnComplete 一次性落气泡（typing 提示）→ 打字 → 通话 → 挂断 →
-// 复盘收尾一次性贴正文 → 返回 → 重进恢复本地历史。
-//
-// 没有浏览器和麦克风的环境里，这是唯一能验证 live.js 逻辑的手段。
-// 跑法：node tools/smoke.mjs   （最后一行打印 SMOKE PASS 即通过）
-// 桩只认 live.js 用到的那些 DOM 属性和事件；改了 DOM 结构记得同步这里。
+// 冒烟测试：不依赖浏览器，用 DOM / AudioContext / WebSocket 的桩跑通新消息链：
+// 列表从 /conversations 渲染 → 进聊天拉 /conversation → 发消息 POST /messages
+// → 轮询拿到 AI 消息 → POST /seen → offline 状态不 typing → reset → 练习卡。
+// 跑法：node tools/smoke.mjs （最后一行打印 SMOKE PASS 即通过）
 const els = new Map();
 function match(el, sel) {
   const want = sel.split(",").map((s) => s.trim().replace(/^\./, ""));
@@ -32,8 +28,13 @@ function mkEl(id = "", tag = "div") {
     _l: {},
     addEventListener(t, fn) { (this._l[t] ||= []).push(fn); },
     fire(t, ev) { (this._l[t] || []).forEach((f) => f(ev || { preventDefault() {} })); },
-    // remove() 要真的从父节点摘掉：typing 气泡靠它消失，断言数节点才准
-    append(...n) { for (const c of n) c.parent = this; this.children.push(...n); },
+    append(...n) {
+      for (const c of n) {
+        if (c.parent) c.parent.children = c.parent.children.filter((x) => x !== c);
+        c.parent = this;
+        this.children.push(c);
+      }
+    },
     appendChild(n) { this.append(n); return n; },
     remove() {
       const p = this.parent;
@@ -76,6 +77,7 @@ globalThis.document = {
   querySelector: (s) => (s === ".tabbar" ? mkEl("", "nav") : mkEl()),
   querySelectorAll: (s) => (s === ".tab" ? tabs : []),
   addEventListener() {},
+  visibilityState: "visible",
 };
 class AC {
   constructor() { this.state = "running"; this.currentTime = 0; this.destination = {}; }
@@ -87,84 +89,119 @@ class AC {
   createScriptProcessor() { return { connect() {}, disconnect() {}, onaudioprocess: null }; }
 }
 globalThis.window = { AudioContext: AC, addEventListener() {} };
-globalThis.Audio = class {
-  constructor() { this.currentTime = 0; }
-  play() { return Promise.resolve(); }
-  pause() {}
-};
-const WSS = [];
+globalThis.Audio = class { constructor() { this.currentTime = 0; } play() { return Promise.resolve(); } pause() {} };
 globalThis.WebSocket = class {
   static OPEN = 1;
-  constructor(u) { this.url = u; this.readyState = 1; this.sent = []; WSS.push(this); }
+  constructor() { this.readyState = 1; this.sent = []; }
   send(s) { this.sent.push(s); }
   close() { this.readyState = 3; this.onclose && this.onclose(); }
 };
-// 记下每次 /token 请求体，用来断言「重进时带上了历史」；
-// 顺带把 contacts 数据目录骗回去（contact.json / moments.md），列表渲染才能跑
-const fetches = [];
-let chatCalls = 0;   // /chat 按次换一组服务器 t（每次 +5s），仿服务端预写身份
-let mirrorRows = null; // 指定后 /hist GET 返回它，模拟云端镜像（null = 原两行）
+Object.defineProperty(globalThis, "navigator", { value: { userAgent: "node" }, configurable: true });
+if (!globalThis.crypto?.randomUUID) Object.defineProperty(globalThis, "crypto", { value: { randomUUID: () => `id-${Math.random().toString(36).slice(2)}` }, configurable: true });
+globalThis.confirm = () => true;
+
+const now = Date.now();
+let leoStatus = "active";
+let cursor = 2;
+const calls = [];
+let replySent = false;
+let allowReply = false;
+const initial = [
+  { id: 1, role: "me", kind: "text", text: "Hello Leo", t: now - 5000, hidden: 0, client_id: null },
+  { id: 2, role: "ai", kind: "text", text: "Hi Rice", t: now - 4000, hidden: 0, client_id: null },
+];
+const json = (obj) => ({ ok: true, status: 200, json: async () => obj });
+const text = (s) => ({ ok: true, status: 200, text: async () => s });
 
 globalThis.fetch = async (url, opts) => {
   const u = String(url);
+  calls.push({ url: u, body: opts?.body ? JSON.parse(opts.body) : null });
   if (u.includes("assets/contacts")) {
-    return {
-      ok: true, status: 200,
-      text: async () => (u.includes("contact.json")
-        ? JSON.stringify({ name: "Leo", status: "hate the fucking world and enjoy it.",
-          preview: "Yo!", time: "09:12", avatar: "assets/contacts/leo/avatar.png",
-          base: [10, 60], burst: [0.6, 2], glow: 10, hours: Array(24).fill("active") })
-        : "09:12 — Sold out before 2pm 🔥"),
-      json: async () => ({}),
-    };
+    return u.includes("contact.json")
+      ? json({ name: "Leo", status: "", preview: "", time: "", avatar: "a.png",
+               base: [10, 60], burst: [0.6, 2], glow: 10, hours: Array(24).fill("active") })
+      : text("[]");
   }
-  if (u === "/me") return { ok: true, json: async () => ({ user: "riceball" }) };
-  if (u === "/profile") return { ok: true, json: async () => ({ user: "riceball" }) };
-  if (u === "/chat") {
-    fetches.push({ url, body: opts?.body ? JSON.parse(opts.body) : null });
-    chatCalls++;
-    const base = 1700000000000 + (chatCalls - 1) * 5000000;
-    return {
-      ok: true, status: 200,
-      json: async () => ({ content: "Midnight shimmer.\nWant details?",
-        parts: [{ text: "Midnight shimmer.", t: base },
-                { text: "Want details?", t: base + 1 }] }),
-    };
+  if (u === "/me" || u === "/profile") return json({ user: "riceball" });
+  if (u === "/ping" || u === "/away" || u === "/seen" || u === "/reset" || u === "/transcript" || u === "/prefs") return json({ ok: true });
+  if (u === "/conversations") {
+    return json({ conversations: [
+      { unit: "persona-leo", status: leoStatus, wake_at: 0, unread: 0, last: initial[1], typing: false },
+      { unit: "persona-chole", status: "active", wake_at: 0, unread: 1, last: initial[1], typing: false },
+      { unit: "persona-sam", status: "active", wake_at: 0, unread: 0, last: null, typing: false },
+      { unit: "persona-Fiona", status: "active", wake_at: 0, unread: 0, last: null, typing: false },
+    ] });
   }
-  if (u === "/hist/persona-leo") {
-    await new Promise((r) => setTimeout(r, 20));
-    return { ok: true, status: 200,
-      json: async () => (mirrorRows ?? [
-        { who: "me", text: "Hello Leo", t: 1 },
-        { who: "ai", text: "Hi Rice", t: 2 },
-      ]) };
+  if (u.startsWith("/conversation?")) {
+    const q = new URL("http://x" + u).searchParams;
+    const unit = q.get("unit");
+    if (unit !== "persona-leo") return json({ unit, status: "active", typing: false, wake_at: 0, reply_due_at: null, cursor: 0, seen: 0, messages: [] });
+    if (q.get("after")) {
+      if (!allowReply || replySent) return json({ unit, status: leoStatus, typing: false, wake_at: 0, reply_due_at: null, cursor, seen: 0, messages: [] });
+      replySent = true;
+      cursor = 101;
+      return json({ unit, status: leoStatus, typing: false, wake_at: 0, reply_due_at: null, cursor,
+        seen: 0, messages: [{ id: 101, role: "ai", kind: "text", text: "Midnight shimmer.", t: now, hidden: 0, client_id: null }] });
+    }
+    return json({ unit, status: leoStatus, typing: false, wake_at: 0, reply_due_at: null, cursor, seen: 0, messages: initial });
   }
-  if (u === "/practice/plan") {
-    return { ok: true, status: 200, json: async () => ({ units: [
-      { id: "unit-01", chapter: "survival", title: "Meet Me", can_do: "认识一个新朋友" },
-      { id: "unit-07", chapter: "expression", title: "At Work", can_do: "聊工作日常" },
-    ] }) };
+  if (u === "/messages") {
+    cursor = 100;
+    return json({ id: 100, t: now, status: leoStatus, wake_at: 0, reply_due_at: now + 4000 });
   }
-  fetches.push({ url, body: opts?.body ? JSON.parse(opts.body) : null });
-  return { ok: true, json: async () => ({ token: "tok", model: "m" }) };
+  if (u === "/token") return json({ token: "tok", model: "m" });
+  if (u === "/practice/plan") return json({ units: [
+    { id: "unit-01", chapter: "survival", title: "Meet Me", can_do: "认识一个新朋友" },
+    { id: "unit-07", chapter: "expression", title: "At Work", can_do: "聊工作日常" },
+  ] });
+  if (u === "/call-review") return json({ overall: "ok", good: [], improve: [], focus: [], lines: [] });
+  return json({});
 };
-// live.js 用 localStorage 留历史，Node 里没有，给个内存桩
 const store = new Map();
 globalThis.localStorage = {
   getItem: (k) => (store.has(k) ? store.get(k) : null),
   setItem: (k, v) => store.set(k, String(v)),
   removeItem: (k) => store.delete(k),
 };
-globalThis.confirm = () => true; // reset 的二次确认，桩里直接放行
 const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
 
-// 用 import.meta.url 拼相对路径，换 checkout 也能跑。
 await import(new URL("../site/js/app.js", import.meta.url).href);
-await tick(10);   // contacts 列表是异步 fetch 渲染
-console.log("✓ 模块加载");
-console.log("✓ 列表渲染 | 聊天:", els.get("chat-list").children.length,
-            "| 联系人:", els.get("contact-list").children.length,
-            "| 朋友圈:", els.get("moment-list").children.length);
+await tick(30);
+const chatList = els.get("chat-list");
+if (chatList.children.length !== 4) throw new Error(`chat rows: ${chatList.children.length}`);
+if (!calls.some((c) => c.url === "/ping")) throw new Error("boot did not ping presence");
+console.log("✓ 列表渲染 4 行，boot 已 ping");
+
+const body = els.get("chat-body");
+chatList.children[0].children[0].fire("click");
+await tick(30);
+if (body.children.length !== 3) throw new Error(`initial render: ${body.children.length}`);
+console.log("✓ 打开对话拉服务端时间线:", body.children.length);
+
+allowReply = true;
+els.get("chat-input").value = "hi";
+els.get("chat-bar").fire("submit");
+await tick(10);
+const sent = calls.find((c) => c.url === "/messages");
+if (!sent || sent.body.text !== "hi" || !sent.body.client_id) throw new Error("send not posted");
+await tick(1700);
+if (!body.children.some((n) => n.textContent === "Midnight shimmer.")) throw new Error("AI reply not rendered");
+const seen = calls.filter((c) => c.url === "/seen").at(-1);
+if (!seen || seen.body.seq !== 101) throw new Error(`seen seq: ${seen?.body?.seq}`);
+console.log("✓ 发送落库、轮询收 AI 消息、已读回执 101");
+
+leoStatus = "offline";
+els.get("chat-back").fire("click");
+chatList.children[0].children[0].fire("click");
+await tick(30);
+if (els.get("chat-state").textContent !== "Offline") throw new Error(`offline header: ${els.get("chat-state").textContent}`);
+if (body.querySelectorAll(".msg--typing").length) throw new Error("offline shows typing");
+console.log("✓ offline 不 typing，顶栏 Offline");
+
+els.get("chat-reset").fire("click");
+await tick(20);
+if (!calls.some((c) => c.url === "/reset")) throw new Error("reset not posted");
+console.log("✓ reset 清服务端时间线");
 
 tabs[1].fire("click");
 await tick(20);
@@ -172,101 +209,10 @@ const practiceRows = els.get("practice-list").children
   .flatMap((c) => c.children || [])
   .filter((c) => String(c.className).includes("practice-row"));
 if (practiceRows.length !== 2) throw new Error(`practice rows: ${practiceRows.length}`);
-console.log("✓ Practice 场景卡渲染:", practiceRows.length);
-
 practiceRows[0].fire("click");
-await tick(30);
-const practiceToken = fetches.find((f) => f.url === "/token" && f.body?.practice);
-if (!practiceToken) throw new Error("practice click did not request a practice token");
-if (practiceToken.body.unit !== "unit-01") {
-  throw new Error(`practice token unit: ${practiceToken.body.unit}`);
-}
-if (els.get("call").hidden) throw new Error("practice call overlay not shown");
-console.log("✓ Practice 卡发起练习通话:", practiceToken.body.unit);
-els.get("call-end").fire("click");
-await tick(10);
-
-tabs[0].fire("click");
-const row = els.get("chat-list").children[0].children[0];
-row.fire("click");
-await tick(10);                       // 等 fetch
-console.log("✓ 进聊天页:", !els.get("view-chat").hidden, "| name:", els.get("chat-name").textContent);
-
-const body = els.get("chat-body");
-await tick(40);
-if (body.children.length !== 3) throw new Error(`R2 history render count: ${body.children.length}`);
-if (!store.has("fluentchat:hist:v1:persona-leo")) throw new Error("R2 history was not persisted");
-console.log("✓ R2 历史显示并已落本地");
-els.get("chat-back").fire("click");
-row.fire("click");
-if (body.children.length !== 3) throw new Error(`reopen local render count: ${body.children.length}`);
-console.log("✓ 重进立即从本地恢复");
+await tick(20);
+const practiceToken = calls.find((c) => c.url === "/token" && c.body?.practice);
+if (!practiceToken || practiceToken.body.unit !== "unit-01") throw new Error("practice token missing");
+console.log("✓ 练习卡仍能拨打");
 console.log("SMOKE PASS");
-
-// ── 回复链回归（2026-10-29 消息身份 + pending 合流护栏）──
-// 事故：服务端预写（t0 章）与前端发泡（Date.now 章）两张时钟，开页合流判不重，
-// 72s 节奏窗口里重开聊天页就把同一回复当「离线未读」插屏，到点再发一遍。
-els.get("chat-input").value = "hi";
-els.get("chat-bar").fire("submit");
-let news = [];
-for (let k = 0; k < 400; k++) { // 节奏机 10-60s 延迟，轮到发齐两条为止
-  await tick(250);
-  news = JSON.parse(localStorage.getItem("fluentchat:hist:v1:persona-leo"))
-    .filter((m) => m.who === "ai" && m.t >= 1700000000000 && m.t < 1700000001000);
-  if (news.length === 2) break;
-}
-if (news.length !== 2) throw new Error(`reply lost: ${news.length}`);
-if (news[0].t !== 1700000000000 || news[1].t !== 1700000000001)
-  throw new Error(`bubbles not stamped with server t: ${news.map((n) => n.t)}`);
-console.log("✓ 回复落盘签服务器 t:", news.map((n) => n.t));
-
-const key = (i) => `${i.kind || "b"}|${i.id || ""}|${i.who}|${i.text}|${i.t ?? ""}`;
-const seen = new Set(JSON.parse(localStorage.getItem("fluentchat:hist:v1:persona-leo")).map(key));
-for (const row of news.map((n) => ({ who: "ai", text: n.text, t: n.t })))
-  if (!seen.has(key(row))) throw new Error(`mirror row not deduped: ${row.text}`);
-console.log("✓ 与服务端预写行同 key，合流判重");
-
-// 事故链重放：预写 pending 行还没送达，在途窗口里切走重开 → 不得插屏
-const hread = () => JSON.parse(localStorage.getItem("fluentchat:hist:v1:persona-leo"));
-const ts2 = 1700005000000;
-mirrorRows = [
-  { who: "me", text: "Hello Leo", t: 1 },
-  { who: "ai", text: "Hi Rice", t: 2 },
-  { who: "me", text: "hi2", t: 1700040000000 },
-  { who: "ai", text: "Midnight shimmer.", t: ts2, pending: true },
-  { who: "ai", text: "Want details?", t: ts2 + 1, pending: true },
-];
-els.get("chat-input").value = "hi2";
-els.get("chat-bar").fire("submit");
-els.get("chat-back").fire("click"); // 在途窗口里切走
-row.fire("click");                  // 立刻重开：合流撞上未送达的预写行
-await tick(400);
-if (hread().some((m) => m.t === ts2)) throw new Error("merge leaked prewritten rows while in flight");
-console.log("✓ 在途重开：pending 预写行被合流跳过，不抢发");
-
-for (let k = 0; k < 400; k++) { // 等节奏机送完本轮
-  await tick(250);
-  if (hread().filter((m) => m.t >= ts2 && m.t < ts2 + 1000).length === 2) break;
-}
-const rows2 = hread().filter((m) => m.t >= ts2 && m.t < ts2 + 1000);
-if (rows2.length !== 2) throw new Error(`in-flight delivery lost: ${rows2.length}`);
-if (rows2.some((m) => m.pending)) throw new Error("delivered rows still flagged pending");
-console.log("✓ 节奏机用服务器 t 送达一次:", rows2.map((m) => m.t));
-
-// 没人认领的 pending 行（离线代打/其他设备）：合流收下并清标；重复合流靠 key 判重
-mirrorRows = [...mirrorRows, { who: "ai", text: "offline cron msg", t: 1700010000000, pending: true }];
-els.get("chat-back").fire("click");
-row.fire("click");
-await tick(400);
-const cron = hread().find((m) => m.text === "offline cron msg");
-if (!cron || cron.pending !== false) throw new Error("pending row not accepted/stripped");
-console.log("✓ 离线 pending 行合流收下并清标");
-
-els.get("chat-back").fire("click");
-row.fire("click");
-await tick(400);
-if (hread().filter((m) => m.text === "offline cron msg").length !== 1) throw new Error("dup on re-merge");
-console.log("✓ 镜像滞留 pending 行重复合流不重复");
-console.log("SMOKE FULL PASS");
-// 节奏引擎的真定时器（回复延迟等）会把事件循环吊住，直接收工
 process.exit(0);

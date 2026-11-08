@@ -1,20 +1,9 @@
-"""FluentChat 后端：给前端签发 Gemini Live 的一次性 token。
+"""FluentChat backend: Gemini Live tokens, persona text chat, Web Push.
 
-职责边界（很重要，别越界）：
-- 只做一件事：拼 prompt → 调 Gemini 签发 ephemeral token → 返回给前端
-- 音频不经过这里。浏览器拿 token 后 WSS 直连 Gemini，走自己的网络。
-  原因：免费版 Worker CPU 上限扛不住音频流，中转还会产生费用。
-
-这样前端就碰不到 API key，也碰不到 prompt —— prompt 钉在 token 里，
-服务端强制生效，用户改不了。
-
-目录分工：
-- backend/auth.py     注册/登录/登出，用户表落 R2 users.json（cookie 会话）
-- backend/common.py   模型容灾链、环境绑定与 secret 读取、KV 订阅存取（工具层）
-- backend/config.py   全部常量与白名单（配置层）
-- backend/prompt_data.py  自动生成的 prompt 数据，勿手改
-- 本文件             路由与 prompt 组装（业务层）
-"""
+The message chain lives in D1 (backend/convo.py). A send only stores the user
+message and schedules a reply; the server-side scheduler generates when the
+persona is actually available. Offline personas do nothing: no read, no model
+call, no push. The phone is a renderer, not a timing source."""
 
 import json
 import re
@@ -23,25 +12,21 @@ from urllib.parse import urlsplit
 from workers import Response, WorkerEntrypoint, fetch as js_fetch
 from workers import wait_until
 from workers.asgi import run_in_background
-from backend import auth
-from backend import cloud_npc
-from backend import life
+from backend import auth, cloud_npc, convo, life
 from backend.common import (ENDPOINTS, _load_subs, _save_subs,
                             bind_worker_env, env_key, run_chain, vapid_pubkey)
 from backend.prompt_data import PROMPTS
 from backend.time_context import DEFAULT_TZ_OFFSET, build_time_context, clamp_tz
 from backend.units import UNIT_META
 from backend.config import (AUTH_TOKENS_URL, HEAVY_USERS_PER_TICK,
-                            HIST_MAX_CHARS, HIST_MAX_ITEMS, HIST_MAX_STORE,
-                            MODEL, NAMES, PERSONAS, SPLIT_CAPS, UNITS, VOICE,
-                            VOICE_BY_ID)
+                            HIST_MAX_CHARS, HIST_MAX_ITEMS, MODEL, NAMES,
+                            PERSONAS, SPLIT_CAPS, UNITS, VOICE, VOICE_BY_ID)
 
 
-def to_messages(
-    unit: str, history: list[dict], tz_offset: int = DEFAULT_TZ_OFFSET,
-    life_state: dict | None = None, contact: dict | None = None,
-) -> list[dict]:
-    """NPC 只使用 contacts 下的人设 prompt，历史转 user/assistant。"""
+def to_messages(unit: str, history: list[dict], tz_offset: int = DEFAULT_TZ_OFFSET,
+                life_state: dict | None = None,
+                contact: dict | None = None) -> list[dict]:
+    """NPC only: persona prompt + life + time sense; history as user/assistant."""
     ctx = build_time_context(history, tz_offset)
     sys_text = (_persona_system(unit, tz_offset, ctx['header'], life_state, contact)
                 + "\n\n" + read_prompt('chat_json'))
@@ -57,13 +42,11 @@ def to_messages(
 
 
 def read_prompt(name: str) -> str:
-    """取 prompt 内容。种类与来源见 backend/prompt_data.py（tools/gen_prompts.py 生成）。"""
     return PROMPTS[name.removesuffix(".md")]
 
 
 def _persona_system(unit: str, tz_offset: int, header: str,
                     life_state: dict | None, contact: dict | None) -> str:
-    """persona 的 system 主体：媒介规则 + 性格 + 他此刻的生活 + 时间感。"""
     blocks = [read_prompt('text_style'), read_prompt(unit)]
     if life_state is not None:
         blocks.append(life.render(life_state, contact or {},
@@ -72,8 +55,6 @@ def _persona_system(unit: str, tz_offset: int, header: str,
     return "\n\n".join(blocks)
 
 
-# 发送节奏：模型先判断自己此刻的能量，再按 persona 的句数档位切泡。
-# 切分只切不改；JSON 解析失败就按 medium 档处理原文，永不丢内容。
 SENT_RE = re.compile(r"(?<=[.!?…])\s+")
 
 
@@ -87,7 +68,7 @@ def reply_bucket(energy) -> str:
 
 
 def parse_chat(raw: str) -> dict:
-    """取 JSON 里的 reply / energy / thread；不是 JSON 就把原文当回复。"""
+    """Take reply/energy/thread from JSON; otherwise treat the raw text as reply."""
     s = raw.strip()
     if s.startswith("```"):
         s = re.sub(r"^```[A-Za-z]*\s*", "", s)
@@ -114,7 +95,6 @@ def parse_chat(raw: str) -> dict:
 
 
 def split_reply(unit: str, raw: str) -> list[str]:
-    """按 AI 的判断 + persona 习惯把回复分组成气泡；只切，不改字。"""
     p = parse_chat(raw)
     if not p["reply"]:
         return []
@@ -134,8 +114,6 @@ def split_reply(unit: str, raw: str) -> list[str]:
     return parts
 
 
-# 离线代打的主动指令，与 site/js/live.js 的 PRO_REQ 同一份文案。
-# 真源在浏览器一侧（它管着在线时的主动开口），cron 这份是随行副本。
 PRO_REQ = (
     "(Proactive turn. Nobody spoke just now: text me first like a friend would. "
     "Pick up whatever we talked about recently or something happening in your day "
@@ -146,10 +124,13 @@ PRO_REQ = (
     "short sentences at most; a polished paragraph is not how friends text. "
     "Not a meta-greeting, don't mention that you haven't heard from me.)"
 )
+BURST_REQ = (
+    "(Follow-up turn: you just texted and, like a real friend, you want to add one "
+    "quick thing. 1-2 short casual lines. Don't start a big new topic.)"
+)
 
 
 async def _auth_route(fn, request) -> Response:
-    """认证路由的壳：取 JSON → 业务（Bad 归 4xx），认证接口不碰链路。"""
     try:
         body = await request.json()
     except Exception:
@@ -163,63 +144,14 @@ async def _auth_route(fn, request) -> Response:
 _SAFE_UNIT = re.compile(r"[A-Za-z0-9_-]{1,64}$")
 
 
-async def _hist_route(env, user: str, request) -> Response:
-    """聊天历史镜像：PUT 存、GET 取，R2 位形 {user}/hist/{unit}.json。
-
-    localStorage 是使用中的活本，R2 是耐久备份（换设备接续、后续 cron 云端
-    主动推都从这儿读）。unit 是 key 的一段路径，只认 persona-xxx/unit-XX。
-    """
-    unit = str(request.url).split("?", 1)[0].split("/hist/", 1)[1]
-    if not _SAFE_UNIT.match(unit):
-        return Response.json({"error": "unit 非法"}, status=400)
-    key = f"{user}/hist/{unit}.json"
-
-    if request.method == "PUT":
-        try:
-            hist = await request.json()
-        except Exception:
-            return Response.json({"error": "请求体不是合法 JSON"}, status=400)
-        if not isinstance(hist, list):
-            return Response.json({"error": "历史必须是数组"}, status=400)
-        old = await _load_hist(env, user, unit)
-        merged = merge_hist(old, hist)
-        await env.DATA.put(key, json.dumps(merged, ensure_ascii=False))
-        t = _newest_ai_t(merged)
-        # 交付贴账：内容写库 = 屏上活动余温，15s 否决窗与气息窗都认它
-        try:
-            state = await cloud_npc.load_state(env, user)
-            _touch_device(state, "merge", cloud_npc.now_ms(), away=False)
-            await cloud_npc.save_state(env, user, state)
-        except Exception as e:
-            print(f"[hist] {user}/{unit} merge touch failed: {type(e).__name__}: {e}")
-        if t:
-            try:
-                await _note_ai(env, user, unit, t)
-            except Exception as e:
-                print(f"[push] seen {user}/{unit} failed: {type(e).__name__}: {e}")
-        return Response.json({"ok": True})
-
-    obj = await env.DATA.get(key)
-    if obj is None:
-        return Response.json({"error": "云端还没有这份对话"}, status=404)
-    return Response(await obj.text(), headers={"Content-Type": "application/json"})
-
-
 def sanitize_history(raw) -> list[dict]:
-    """清洗前端带回来的聊天历史：[{"who": me|ai, "text": str, "t": ms}, ...]。
-
-    历史会钉进 system instruction，所以条数和单条长度都要掐。
-    t 只用于给模型时间感，不参与正文截断。
-    复盘卡片（kind=review）前端就不带，带了也会在这里被丢掉。
-    """
     if not isinstance(raw, list):
         return []
     out: list[dict] = []
     for item in raw:
         if not isinstance(item, dict):
             continue
-        who = item.get("who")
-        text = item.get("text")
+        who, text = item.get("who"), item.get("text")
         if who not in ("me", "ai") or not isinstance(text, str):
             continue
         text = text.strip()
@@ -233,8 +165,11 @@ def sanitize_history(raw) -> list[dict]:
     return out[-HIST_MAX_ITEMS:]
 
 
+def _rows_to_hist(rows: list) -> list[dict]:
+    return [{"who": r["role"], "text": r["text"], "t": r["t"]} for r in rows]
+
+
 def clean_call_turns(raw) -> list[dict]:
-    """通话点评入参：只留双方的转写，条数与单条长度都掐死。"""
     out: list[dict] = []
     if not isinstance(raw, list):
         return out
@@ -254,17 +189,14 @@ def clean_call_turns(raw) -> list[dict]:
 
 
 def _review_json(text: str) -> dict:
-    """模型偶尔裹代码块/寒暄：截出最外层对象再解析。"""
     t = (text or "").strip()
     a, b = t.find("{"), t.rfind("}")
     if a < 0 or b <= a:
         raise ValueError("模型没给出 JSON")
-    # strict=False：允许字符串里出现裸换行/制表符（模型常这么写）
     return json.loads(t[a:b + 1], strict=False)
 
 
 def clean_review(data) -> dict:
-    """点评结果兜底：字段类型、条数与长度都收一遍，前端拿到就能直接画。"""
     if not isinstance(data, dict):
         raise ValueError("点评不是对象")
 
@@ -293,7 +225,6 @@ def clean_review(data) -> dict:
 
 
 def call_review_messages(turns: list[dict]) -> list[dict]:
-    """system = 点评规则；user = 带编号的转写（i 就是 lines[].i 的锚点）。"""
     lines = [
         f"[{i}] {'用户' if t['who'] == 'me' else 'NPC'}：{t['text']}"
         for i, t in enumerate(turns)
@@ -310,12 +241,6 @@ def build_system_instruction(
     life_state: dict | None = None, contact: dict | None = None,
     practice: bool = False,
 ) -> str:
-    """把基础教学规则、persona 与本次话题拼成一份完整 prompt。
-
-    顺序有讲究：先给通用对话规则，再给本次话题。
-    后写的更贴近当前任务，模型更容易听话题部分的。
-    有历史时历史钉在最后 —— 同理，它要盖过 base.md「第一轮直接说开场白」。
-    """
     history = history or []
     base_name = "base-ch2.md" if unit in ("unit-07", "unit-08", "unit-09", "unit-10", "unit-11", "unit-12") else "base.md"
     if unit in PERSONAS:
@@ -362,17 +287,7 @@ def build_token_payload(
     life_state: dict | None = None, contact: dict | None = None,
     practice: bool = False, voice: str | None = None,
 ) -> dict:
-    """构造签发请求体。unit 参数横跨两类 id：unit-XX 和 persona-xxx。
-
-    关键：不设 field_mask。按文档语义，整个 setup 都从 token 里读，
-    客户端发来的 setup 会被完全忽略 —— 这正是 prompt 锁死在后端的机制。
-
-    已实测踩过的坑：
-    - speechConfig 必须嵌在 generationConfig 内，放顶层会报 Unknown name
-    - outputAudioTranscription 给 {} 即可，用来把 AI 说的话转成文字
-    """
     return {
-        # 一次性的：每次建连签一个新 token
         "uses": 1,
         "bidiGenerateContentSetup": {
             "model": f"models/{MODEL}",
@@ -392,267 +307,19 @@ def build_token_payload(
                     }
                 },
             },
-            # 把 AI 的语音转成文字，前端用来显示字幕
             "outputAudioTranscription": {},
-            # 也转用户说的话，复盘时要用
             "inputAudioTranscription": {},
         },
     }
 
 
 async def _contact(env, unit: str) -> dict | None:
-    """画像真源是 contact.json（ASSETS，与浏览器同一份文件）。"""
     try:
         res = await env.ASSETS.fetch(
             f"https://assets.local/assets/contacts/{unit.removeprefix('persona-')}/contact.json")
         return await res.json() if res.ok else None
     except Exception:
         return None
-
-
-async def _load_hist(env, user: str, unit: str) -> list:
-    """镜像读取。读不到/坏档一律空册：调用方不必各自设防，坏一册别炸全场。"""
-    try:
-        obj = await env.DATA.get(f"{user}/hist/{unit}.json")
-        hist = json.loads(await obj.text()) if obj is not None else []
-    except Exception:
-        hist = []
-    return hist if isinstance(hist, list) else []
-
-
-async def _save_hist(env, user: str, unit: str, hist: list) -> None:
-    await env.DATA.put(f"{user}/hist/{unit}.json",
-                       json.dumps(hist[-HIST_MAX_STORE:], ensure_ascii=False))
-
-
-def _prune_pending(hist: list, bid: str) -> list:
-    """回收被取代回合尚未落定的预写行：只删没送到任何设备的 pending，
-    已落定（pending=False，含该 bid 已送达）的原样保留。latest-state 不变量
-    下新消息上位，旧回合未上屏的气泡不该再复活。"""
-    return [e for e in hist if not (e.get("bid") == bid and e.get("pending"))]
-
-
-def _reply_owed(hist: list) -> bool:
-    """屏幕最新一条是不是「欠着没回」的用户消息。latest-state 不变量下，
-    欠回复时该由对话线回答，代打不该插进去重讲旧话题。"""
-    committed = [e for e in hist if isinstance(e, dict) and e.get("t")
-                 and not e.get("pending") and e.get("who") in ("me", "ai")]
-    if not committed:
-        return False
-    return max(committed, key=lambda e: int(e["t"])).get("who") == "me"
-
-
-def _turn_rec(state: dict, unit: str) -> list:
-    rec = (state.get("activeTurn") or {}).get(unit)
-    return rec if isinstance(rec, list) and rec else [None, 0]
-
-
-async def _claim_turn(env, user: str, unit: str, bid: str, at: float) -> str | None:
-    """认领活动回合：本 bid 上位为 (user,unit) 唯一有权落库的在途回合，
-    返回被取代的旧 bid（调用方据此回收其未落定预写）。
-
-    at 必须是**请求到达**的时刻而非后台跑完的时刻——否则旧 bid 的后台生成
-    迟到执行时会用更大的墙钟把更新的活动回合顶下去，反向选错。"""
-    state = await cloud_npc.load_state(env, user)
-    prev = _turn_rec(state, unit)[0]
-    state.setdefault("activeTurn", {})[unit] = [bid, at]
-    await cloud_npc.save_state(env, user, state)
-    return prev
-
-
-async def _turn_at(env, user: str, unit: str) -> tuple[str | None, int]:
-    state = await cloud_npc.load_state(env, user)
-    rec = _turn_rec(state, unit)
-    return rec[0], int(rec[1] or 0)
-
-
-async def _is_active_turn(env, user: str, unit: str, bid: str) -> bool:
-    """写前判活动：迟到的、被更新回合取代的结果一律不许落库。"""
-    return (await _turn_at(env, user, unit))[0] == bid
-
-
-def _hist_key(entry: dict) -> str:
-    """消息身份键，与 live.js 的 key() 逐字段对齐：kind|id|who|text|t。"""
-    t = entry.get("t")
-    return "|".join((
-        str(entry.get("kind") or "b"),
-        str(entry.get("id") or ""),
-        str(entry.get("who")),
-        str(entry.get("text") or ""),
-        str(int(t) if isinstance(t, (int, float)) else ""),
-    ))
-
-
-def merge_hist(old: list, new: list) -> list:
-    """云端镜像按消息身份追加合并（云 = 单一时序真源，不再是整文件覆盖）。
-
-    同身份条目新胜旧：表演端 PUT 到场即送达，预写的 pending 标记随合并消失；
-    客户端本地窗口掐掉的老条目云端保留。按 t 升序，超限掐头。"""
-    by_key: dict[str, dict] = {}
-    for e in [*old, *new]:
-        if isinstance(e, dict):
-            by_key[_hist_key(e)] = e
-    out = sorted(by_key.values(),
-                 key=lambda e: e.get("t") if isinstance(e.get("t"), (int, float)) else 0)
-    return out[-HIST_MAX_STORE:]
-
-
-def _seen_at(state: dict, unit: str) -> int:
-    seen = state.get("notified")
-    value = seen.get(unit) if isinstance(seen, dict) else None
-    return int(value) if isinstance(value, (int, float)) else 0
-
-
-def _mark_seen(state: dict, unit: str, t: int) -> None:
-    if not isinstance(state.get("notified"), dict):
-        state["notified"] = {}
-    if t > _seen_at(state, unit):
-        state["notified"][unit] = int(t)
-
-
-def _last_ai(state: dict, unit: str) -> int:
-    last = state.get("lastAi")
-    value = last.get(unit) if isinstance(last, dict) else None
-    return int(value) if isinstance(value, (int, float)) else 0
-
-
-def _set_last_ai(state: dict, unit: str, t: int) -> bool:
-    if t <= _last_ai(state, unit):
-        return False
-    if not isinstance(state.get("lastAi"), dict):
-        state["lastAi"] = {}
-    state["lastAi"][unit] = int(t)
-    return True
-
-
-def _offline(state: dict, now_ms: float) -> bool:
-    """在场 = 正证据租约：只用「设备最后一次开口距今」判定，/away 一类
-    负信号不参与裁决（iOS PWA 假 hidden 会幽灵 away，只能作记录）。
-    居民任一设备租约未过期 = 在线；全体过期 = 离线。
-    devices 缺的老册落到单设备遗留字段（部署灰度窗口内还在唱主角）。"""
-    devs = state.get("devices")
-    if isinstance(devs, dict) and devs:
-        for dev in devs.values():
-            seen = dev.get("lastSeen") if isinstance(dev, dict) else None
-            if isinstance(seen, (int, float)) and 0 < seen \
-                    and seen > now_ms - LEASE_MS:
-                return False
-        return True
-    seen = state.get("lastSeen")
-    return not (isinstance(seen, (int, float)) and 0 < seen
-                and seen > now_ms - LEASE_MS)
-
-
-# presence 租约：设备最后一次活动到此算在场。需 ≥ 2×前端心跳间隔（60s），
-# 可见页在两次心跳之间永不误判离线；离 app 后横幅最迟 LEASE_MS 到达。
-LEASE_MS = 150_000  # 150s
-
-# 屏上余温否决：任一设备这么近内有过请求，推送让位——防的是「同屏双显」，
-# 不判人在哪。幽灵 blip（iOS 假 hidden）常发生在手指操作余温里，反映了它。
-ACTIVITY_VETO_MS = 15_000
-
-
-# 表演者气息判定：pending 在途期间，任一设备这么近内有过请求（心跳/交付 PUT）
-# = 表演者活着，不接管；气息断（iOS 冻结页面）= 死页，早接管别替它陪等。
-# 45s 与 20s 表演心跳配对：一次错过容错，两次错过判死。
-PRESENCE_STALL_MS = 45_000
-
-
-def _presenter_alive(state: dict, now_ms: float) -> bool:
-    return _recent_activity(state, now_ms, PRESENCE_STALL_MS)
-
-
-def _recent_activity(state: dict, now_ms: float, window_ms: int = ACTIVITY_VETO_MS) -> bool:
-    devs = state.get("devices")
-    if isinstance(devs, dict):
-        for dev in devs.values():
-            seen = dev.get("lastSeen") if isinstance(dev, dict) else None
-            if isinstance(seen, (int, float)) and 0 < seen \
-                    and seen > now_ms - window_ms:
-                return True
-    seen = state.get("lastSeen")
-    return isinstance(seen, (int, float)) and 0 < seen \
-        and seen > now_ms - window_ms
-
-
-def _touch_device(state: dict, dev: str, now_ms: int, away: bool) -> None:
-    """一台设备报一座台账：开口即续租（ping/away 都是活动证据）；away
-    只作 awayAt 记录，供观测用，不参与在场裁决。"""
-    devs = _devices_of(state)
-    devs[dev] = {"lastSeen": now_ms, "awayAt": now_ms if away else 0}
-    state["devices"] = devs
-
-
-def _devices_of(state: dict) -> dict:
-    """设备名册视图：抄掉 5 天没露面的死设备，避免册子膨胀。"""
-    devs = state.get("devices")
-    if not isinstance(devs, dict):
-        return {}
-    fresh = {}
-    for name, dev in devs.items():
-        if isinstance(dev, dict) and isinstance(dev.get("lastSeen"), (int, float)) \
-                and dev["lastSeen"] > cloud_npc.now_ms() - 5 * 86400_000:
-            fresh[name] = dev
-    return fresh
-
-
-# pending = 预写未发送：表演端（web app 节奏机）还没把这条泡落下来。
-# 推送与已读一律不消费 pending；表演端死了（关页/断电）由下面的接管
-# 时限强制放行 —— 通知永远不等待 UI 表演。
-PENDING_TAKEOVER_MS = 10 * 60_000
-
-
-def _ai_rows(hist: list) -> list[dict]:
-    """hist 里能当消息体用的 ai 行，倒序（最新在前）。"""
-    return [i for i in reversed(hist) if (i.get("who") == "ai" and not i.get("hidden")
-            and isinstance(i.get("t"), (int, float)))]
-
-
-def _newest_ai(hist: list, now_ms: float = 0, offline: bool = False) -> dict | None:
-    """最新一条已送达的 AI 消息。now_ms 传值 = 允许超时接管 pending 行
-    （推送轨用），不传 = 只认表演端真送出的行（已读用）。
-
-    门只看批尾一条：最新行不是 pending 就直认；门后要退，退到最新
-    delivered —— 别让更老的尾巴 pending 盖住它之后的正式行。
-    offline=True 用于离线 sweep：没有表演端在途，pending 立即可推。"""
-    rows = _ai_rows(hist)
-    if not rows:
-        return None
-    newest = rows[0]
-    if not newest.get("pending"):
-        return newest
-    if offline or (now_ms and int(newest["t"]) < now_ms - PENDING_TAKEOVER_MS):
-        return newest  # 离线无表演端，或批尾 pending 已过接管线：接管
-    return next((i for i in rows[1:] if not i.get("pending")), None)
-
-
-def _pending_in_flight(hist: list, now_ms: float) -> bool:
-    """批尾还有未过接管时限的预写 = 有一场表演在途，cron 代打该让渡这一格。"""
-    rows = _ai_rows(hist)
-    return bool(rows) and bool(rows[0].get("pending")) \
-        and int(rows[0]["t"]) >= now_ms - PENDING_TAKEOVER_MS
-
-
-def _newest_ai_t(hist: list) -> int:
-    item = _newest_ai(hist)
-    return int(item["t"]) if item else 0
-
-
-async def _note_ai(env, user: str, unit: str, t: int,
-                   mark_seen: bool = False) -> None:
-    """记下该 unit 最新 AI 消息。已读水位唯一来源是前端表演完成上报
-    （/hist/seen）：服务端一律不代标 —— 在线代标是个隐藏丢消息点：
-    生成完但页面已走时标了已读，通知器就失去接管抓手，回复躺在档案
-    里永远没人收到。"""
-    if not t:
-        return
-    state = await cloud_npc.load_state(env, user)
-    changed = _set_last_ai(state, unit, t)
-    if mark_seen and t > _seen_at(state, unit):
-        _mark_seen(state, unit, t)
-        changed = True
-    if changed:
-        await cloud_npc.save_state(env, user, state)
 
 
 async def _load_users(env) -> dict:
@@ -665,14 +332,69 @@ async def _load_users(env) -> dict:
     return users if isinstance(users, dict) else {}
 
 
+async def _migrate(env, user: str) -> None:
+    """One-time R2 hist -> D1 import. Runs only while the user has no rows."""
+    pref = await convo.prefs(env, user)
+    if pref["migrated"]:
+        return
+    if await convo.has_messages(env, user):
+        await convo.set_migrated(env, user)
+        return
+    try:
+        obj = await env.DATA.get(f"{user}/state.json")
+        state = json.loads(await obj.text()) if obj is not None else {}
+    except Exception:
+        state = {}
+    notified = state.get("notified") or {}
+    if state.get("notif") in ("off", "ticker", "preview"):
+        await convo.set_notif(env, user, state["notif"])
+    ledger = state.get("ledger") if isinstance(state.get("ledger"), dict) else {}
+    eng = state.get("eng") if isinstance(state.get("eng"), dict) else {}
+    for unit in PERSONAS:
+        try:
+            obj = await env.DATA.get(f"{user}/hist/{unit}.json")
+            hist = json.loads(await obj.text()) if obj is not None else []
+        except Exception:
+            continue
+        rows = []
+        for i, item in enumerate(hist if isinstance(hist, list) else []):
+            if not isinstance(item, dict):
+                continue
+            who, t = item.get("who"), int(item.get("t") or 0)
+            kind = item.get("kind") or ("transcript" if item.get("hidden") else "text")
+            if kind == "call":
+                dur = int(item.get("dur") or 0)
+                text = f"{'Practice call' if item.get('practice') else 'Voice call'} · {dur // 60000}:{dur % 60000 // 1000:02d}"
+                who = "me"
+            else:
+                text = str(item.get("text") or "")
+            if who not in ("me", "ai") or not text:
+                continue
+            rows.append({
+                "role": who,
+                "kind": kind if kind in ("text", "call", "review", "transcript") else "text",
+                "text": text[:2000],
+                "t": t or convo.now_ms(),
+                "hidden": 1 if item.get("hidden") else 0,
+                "client_id": str(item.get("id") or f"mig:{i}:{t}"),
+            })
+        cut = notified.get(unit)
+        await convo.import_messages(
+            env, user, unit, rows,
+            int(cut) if cut is not None else max((r["t"] for r in rows), default=0),
+            convo.now_ms())
+        await convo.seed_proactive(env, user, unit, ledger.get(unit), eng.get(unit),
+                                   convo.now_ms())
+    await convo.set_migrated(env, user)
+
+
 class Default(WorkerEntrypoint):
     async def fetch(self, request):
-        # 先绑定 env，链上取 key、读用户表全靠它
         bind_worker_env(self.env)
         auth.bind_r2(self.env)
         path = str(request.url).split("?", 1)[0]
+        query = dict(pair.split("=", 1) for pair in urlsplit(str(request.url)).query.split("&") if "=" in pair)
 
-        # ── 认证路由：不用先登录 ──
         if request.method == "POST" and path.endswith("/register"):
             return await _auth_route(auth.register, request)
         if request.method == "POST" and path.endswith("/login"):
@@ -682,23 +404,18 @@ class Default(WorkerEntrypoint):
         if request.method == "GET" and path.endswith("/me"):
             return auth.me(await auth.resolve_user(request))
 
-        # ── 以下业务所需登录：cookie 里要有注册过的用户名。
-        # 注意别把静态资产挡住：GET/HEAD 的页面/JS/CSS 走 ASSETS 代发（在下面），公开。
         user = await auth.resolve_user(request)
 
-        # 健康检查：顺便确认部署成功、secret 已设
         if request.method == "GET" and path.endswith("/health"):
             has = sum(bool(env_key(ep["env"])) for ep in ENDPOINTS.values())
             return Response.json({
                 "ok": True,
                 "model": MODEL,
                 "voice": VOICE,
-                # 只回布尔，不回 key 本身
                 "has_key": env_key("GEMINI_API_KEY") is not None,
                 "chain_ready": has,
             })
 
-        # ── Practice：场景元数据（Practice tab 的数据源）──
         if request.method == "GET" and path.endswith("/practice/plan"):
             if not user:
                 return Response.json({"error": "请先登录"}, status=401)
@@ -709,238 +426,194 @@ class Default(WorkerEntrypoint):
                 ]
             })
 
-        # ── 登录后的业务；历史镜像挂在门禁之后 ──
-        if request.method in ("GET", "PUT") and "/hist/" in path:
-            if not user:
-                return Response.json({"error": "请先登录"}, status=401)
-            return await _hist_route(self.env, user, request)
+        if not user and request.method != "GET":
+            return Response.json({"error": "请先登录"}, status=401)
 
-        # 已读回执：设备把云端消息合进本地并呈现（openChat 合流）后回执一笔。
-        # 与 PUT 落库无关，只推已读水位。显式 mark_seen：设备在场就是读过，
-        # 推送轨从此不再为「正在屏幕上读」的人响铃。
-        if request.method == "POST" and path.endswith("/hist/seen"):
+        # ── message chain ────────────────────────────────────────────────
+        if request.method == "POST" and path.endswith("/messages"):
+            body = await request.json()
+            unit = body.get("unit")
+            text = str(body.get("text") or "").strip()[:2000]
+            if unit not in PERSONAS:
+                return Response.json({"error": f"unit 只收 {sorted(PERSONAS)}"}, status=400)
+            if not text:
+                return Response.json({"error": "消息不能为空"}, status=400)
+            client_id = str(body.get("client_id") or "")[:64] or None
+            now = convo.now_ms()
+            tz = clamp_tz(body.get("tz"))
+            await _migrate(self.env, user)
+            await convo.set_tz(self.env, user, tz)
+            contact = await _contact(self.env, unit) or {}
+            conv = await convo.load(self.env, user, unit, now)
+            st = convo.status(contact, conv, user, unit, now, tz)
+            warm = now - await convo.last_ai_t(self.env, user, unit) < 90_000
+            if st == "offline":
+                wake = convo.wake_at(contact, now, tz)
+                due = wake + (convo.reply_delay(contact, "active", warm) or 5000)
+            else:
+                wake = 0
+                due = now + (convo.reply_delay(contact, st, warm) or 5000)
+            mid, created = await convo.append(self.env, user, unit, "me", text, now,
+                                              client_id=client_id)
+            if created:
+                burst = int((contact.get("burst") or [0, 1])[1] or 0)
+                await convo.schedule(self.env, user, unit, "reply", due, now,
+                                     burst_left=burst)
+                await convo.bump_engagement(self.env, user, unit, now, warm)
+                print(f"[msg] {user}/{unit} id={mid} status={st} due={due}")
+            else:
+                due = int(conv["reply_due_at"] or 0)
+            return Response.json({"id": mid, "t": now, "status": st,
+                                  "wake_at": wake, "reply_due_at": due})
+
+        if request.method == "GET" and path.endswith("/conversation"):
             if not user:
                 return Response.json({"error": "请先登录"}, status=401)
-            try:
-                body = await request.json()
-            except Exception:
-                body = {}
-            unit = str(body.get("unit") or "")
-            if not _SAFE_UNIT.match(unit):
+            unit = query.get("unit")
+            if unit not in PERSONAS:
                 return Response.json({"error": "unit 非法"}, status=400)
-            t = body.get("t")
-            if not isinstance(t, (int, float)) or t <= 0:
-                return Response.json({"error": "t 非法"}, status=400)
-            state = await cloud_npc.load_state(self.env, user)
-            _mark_seen(state, unit, int(t))
-            _touch_device(state, "merge", cloud_npc.now_ms(), away=False)
-            await cloud_npc.save_state(self.env, user, state)
-            return Response.json({"ok": True})
+            after = int(query.get("after") or 0)
+            limit = min(100, max(1, int(query.get("limit") or 50)))
+            await _migrate(self.env, user)
+            contact = await _contact(self.env, unit) or {}
+            await self._kick_due(self.env, user, unit, contact)
+            now = convo.now_ms()
+            tz = int((await convo.prefs(self.env, user))["tz_offset"])
+            conv = await convo.load(self.env, user, unit, now)
+            st = convo.status(contact, conv, user, unit, now, tz)
+            rows = await convo.tail(self.env, user, unit, after, limit)
+            cursor = int(rows[-1]["id"]) if rows else after
+            typing = bool(conv["turn_id"] and int(conv["turn_expires_at"] or 0) > now)
+            return Response.json({
+                "unit": unit,
+                "status": st,
+                "typing": typing,
+                "wake_at": convo.wake_at(contact, now, tz) if st == "offline" else 0,
+                "reply_due_at": conv["reply_due_at"],
+                "cursor": cursor,
+                "seen": int(conv["user_seen_seq"] or 0),
+                "messages": rows,
+            })
 
-        # unseen 交付自报账：落泡时页面在后台（visibilityState=hidden），
-        # 泡落进无人屏。推送决策不信任报账方，闸门自证：
-        #   ① 线程无 pending 在途（或表演者气息已断，hist 自证）；
-        #   ② 15s 内无设备活动（屏上余温否决，幽灵 blip 的缓冲带）。
-        # 被闸住只搁置不打已读水位，交 1 分钟 cron 补发员兜底；推出即记已读。
-        if request.method == "POST" and path.endswith("/hist/unseen"):
+        if request.method == "GET" and path.endswith("/conversations"):
             if not user:
                 return Response.json({"error": "请先登录"}, status=401)
+            await _migrate(self.env, user)
+            now = convo.now_ms()
+            tz = int((await convo.prefs(self.env, user))["tz_offset"])
+            out = []
+            for unit in sorted(PERSONAS):
+                contact = await _contact(self.env, unit) or {}
+                conv = await convo.load(self.env, user, unit, now)
+                st = convo.status(contact, conv, user, unit, now, tz)
+                out.append({
+                    "unit": unit,
+                    "status": st,
+                    "wake_at": convo.wake_at(contact, now, tz) if st == "offline" else 0,
+                    "unread": await convo.unread(self.env, user, unit,
+                                                 int(conv["user_seen_seq"] or 0)),
+                    "last": await convo.last_any(self.env, user, unit),
+                    "typing": bool(conv["turn_id"] and int(conv["turn_expires_at"] or 0) > now),
+                })
+            return Response.json({"conversations": out})
+
+        if request.method == "POST" and path.endswith("/seen"):
+            body = await request.json()
+            unit = body.get("unit")
+            seq = body.get("seq")
+            if unit not in PERSONAS or not isinstance(seq, (int, float)):
+                return Response.json({"error": "unit/seq 非法"}, status=400)
+            await convo.set_seen(self.env, user, unit, int(seq), convo.now_ms())
+            return Response.json({"ok": True})
+
+        if request.method == "POST" and path.endswith("/transcript"):
+            body = await request.json()
+            unit = body.get("unit")
+            turns = clean_call_turns(body.get("turns"))
+            call = body.get("call") or {}
+            if unit not in PERSONAS:
+                return Response.json({"error": "unit 非法"}, status=400)
+            now = convo.now_ms()
+            cid = str(call.get("id") or "")
+            for i, t in enumerate(turns):
+                await convo.append(self.env, user, unit, t["who"], t["text"], now + i,
+                                   kind="transcript", hidden=1,
+                                   client_id=f"{cid}:t{i}" if cid else None)
+            if cid and call.get("text"):
+                await convo.append(self.env, user, unit, "me", str(call["text"])[:120],
+                                   now, kind="call", client_id=cid)
+            return Response.json({"ok": True})
+
+        if request.method == "POST" and path.endswith("/reset"):
+            body = await request.json()
+            unit = body.get("unit")
+            if unit not in PERSONAS:
+                return Response.json({"error": "unit 非法"}, status=400)
+            await convo.reset(self.env, user, unit, convo.now_ms())
+            return Response.json({"ok": True})
+
+        # ── presence ─────────────────────────────────────────────────────
+        if request.method == "POST" and (path.endswith("/ping") or path.endswith("/away")):
             try:
                 body = await request.json()
             except Exception:
                 body = {}
-            unit = str(body.get("unit") or "")
-            t = body.get("t")
-            if not _SAFE_UNIT.match(unit) or not isinstance(t, (int, float)) or t <= 0:
-                return Response.json({"error": "unit/t 非法"}, status=400)
-            state = await cloud_npc.load_state(self.env, user)
-            now_ms = cloud_npc.now_ms()
-            if _recent_activity(state, now_ms):
-                print(f"[unseen] {user}/{unit} deferred=activity")
-                return Response.json({"ok": True, "deferred": True})
-            hist = await _load_hist(self.env, user, unit)
-            if _pending_in_flight(hist, now_ms) \
-                    and _presenter_alive(state, now_ms):
-                print(f"[unseen] {user}/{unit} deferred=pending")
-                return Response.json({"ok": True, "deferred": True})
-            # 同上：无 pending，或表演者已死允许接管批尾（offline=True）
-            newest = _newest_ai(hist, now_ms, offline=True)
-            if newest is None or int(newest["t"]) <= _seen_at(state, unit):
-                print(f"[unseen] {user}/{unit} deferred=gates")
-                await cloud_npc.save_state(self.env, user, state)
-                return Response.json({"ok": True, "deferred": True})
-            await self._push(self.env, user, unit, {"name": NAMES.get(unit, unit)},
-                             str(newest.get("text") or ""))
-            _mark_seen(state, unit, int(newest["t"]))
-            _touch_device(state, "merge", cloud_npc.now_ms(), away=False)
-            await cloud_npc.save_state(self.env, user, state)
-            return Response.json({"ok": True, "pushed": True})
-
-        # 心跳：每台设备每 3 分钟报到一次（前端带设备 id）。cron 只代打给
-        # 「所有设备都断了」的用户，别跟浏览器自己的抽签叠着发。
-        if request.method == "POST" and path.endswith("/ping"):
-            if not user:
-                return Response.json({"error": "请先登录"}, status=401)
-            try:
-                body = await request.json()
-            except Exception:
-                body = {}
-            state = await cloud_npc.load_state(self.env, user)
-            _touch_device(state, str(body.get("d") or "anon")[:64],
-                          cloud_npc.now_ms(), away=False)
-            await cloud_npc.save_state(self.env, user, state)
+            dev = str(body.get("d") or "anon")[:64]
+            now = convo.now_ms()
+            await convo.touch_device(self.env, user, dev, now, path.endswith("/ping"))
+            if path.endswith("/away"):
+                task = run_in_background(self._push_user(self.env, user))
+                wait_until(task)
             return Response.json({"ok": True})
 
-        # 离开信号：visibilitychange/pagehide 用 sendBeacon 打一发，只标
-        # 自己这台设备，不压别台的在场；不必等心跳过期，通知器下一拍就能算。
-        if request.method == "POST" and path.endswith("/away"):
-            if not user:
-                return Response.json({"error": "请先登录"}, status=401)
-            try:
-                body = await request.json()
-            except Exception:
-                body = {}
-            state = await cloud_npc.load_state(self.env, user)
-            _touch_device(state, str(body.get("d") or "anon")[:64],
-                          cloud_npc.now_ms(), away=True)
-            await cloud_npc.save_state(self.env, user, state)
-            return Response.json({"ok": True})
-
-        # 自检：对本账号立即跑一轮离线代打流程（绕心跳判定，配额窗口照常）。
-        # 排查 cron 火总不看走没走、账号画像抽没抽中都用得上；只有本人能动自己。
-        if request.method == "POST" and path.endswith("/cron/kick"):
-            if not user:
-                return Response.json({"error": "请先登录"}, status=401)
-            force = (str(request.url).split("?", 1)[-1].find("force=1") >= 0) or str(request.url).split("?")[-1] == "force=1"
-            wrote, diag = await self._cron_sweep(self.env, now=cloud_npc.now_ms() / 1000.0,
-                                                 one_user=user, force=force)
-            return Response.json({"ok": True, "wrote": wrote, "diag": diag})
-
-        # 个人资料：用户名 + 头像（dataURL 存 {user}/avatar.txt，前端直接贴 img.src）
-        if request.method == "GET" and path.endswith("/profile"):
-            if not user:
-                return Response.json({"error": "请先登录"}, status=401)
-            obj = await self.env.DATA.get(f"{user}/avatar.txt")
-            avatar = (await obj.text()) if obj is not None else ""
-            return Response.json({"user": user, "avatar": avatar})
-
-        if request.method == "PUT" and path.endswith("/avatar"):
-            if not user:
-                return Response.json({"error": "请先登录"}, status=401)
-            try:
-                body = await request.json()
-            except Exception:
-                return Response.json({"error": "请求体不是合法 JSON"}, status=400)
-            data = body.get("data") or ""
-            # 只收前端压好的图片 dataURL，128px webp ≈ 几 KB；别让人传大图进来
-            if not (data.startswith("data:image/") and len(data) < 120_000):
-                return Response.json({"error": "头像只收 120KB 内的图片 dataURL"}, status=400)
-            await self.env.DATA.put(f"{user}/avatar.txt", data)
-            return Response.json({"ok": True})
-
-        # 文字对话：persona 聊天走模型容灾链（非流式）。/history 语义同 /token。
-        if request.method == "POST" and path.endswith("/chat"):
-            if not user:
-                return Response.json({"error": "请先登录"}, status=401)
+        # ── channel history for voice calls: the server owns it ─────────
+        if request.method == "POST" and path.endswith("/token"):
             try:
                 body = await request.json()
             except Exception:
                 return Response.json({"error": "请求体不是合法 JSON"}, status=400)
             unit = body.get("unit")
-            if unit not in PERSONAS:
+            if unit not in UNITS and unit not in PERSONAS:
                 return Response.json(
-                    {"error": f"/chat 只面向 persona：{sorted(PERSONAS)}"},
-                    status=400)
-            history = sanitize_history(body.get("history"))
+                    {"error": f"unit 必须是 {sorted(UNITS | PERSONAS)} 之一"}, status=400)
+            practice = bool(body.get("practice"))
+            if practice and unit not in UNITS:
+                return Response.json({"error": "practice 只收 unit-XX"}, status=400)
             tz_offset = clamp_tz(body.get("tz"))
-            # 可选：主动消息场景的临时指令（最后一条 user 消息，模型照办开口）
-            directive = str(body.get("directive") or "").strip()[:400]
-            # 幂等批次 id：iOS 掐连接时同一批消息会重发，bid 相同 = 同一批，
-            # 已预写过的直接返回原文，不再生成第二份（防双回复）
-            bid = str(body.get("bid") or "")[:64]
-            print(f"chat request unit={unit} history={len(history)} directive={1 if directive else 0}")
-            contact = await _contact(self.env, unit) or {}
-            now = cloud_npc.now_ms()
-            lif = life.settle(await life.load(self.env, user, unit), contact, now, tz_offset)
-            # 生成整段挂 waitUntil 后台跑：客户端中途断开（退后台/闪退）不再
-            # 连坐杀掉生成——后台函数跑完预写+lastAi，离线通知器照常推送。
-            async def _gen():
-                if bid:
-                    try:
-                        hist = await _load_hist(self.env, user, unit)
-                        dup = [dict(text=str(q.get("text") or ""), t=int(q.get("t") or 0))
-                               for q in hist if q.get("bid") == bid and q.get("t")]
-                        if dup:
-                            print(f"chat idempotent-hit unit={unit} bid={bid[:12]} parts={len(dup)}")
-                            return True, {"content": "\n".join(q["text"] for q in dup),
-                                          "parts": dup}
-                    except Exception as e:
-                        print(f"[hist] {user}/{unit} idempotent check failed: {type(e).__name__}: {e}")
-                # 认领活动回合：本 bid 上位为这条会话唯一有权落库的在途回合；
-                # 被它取代的旧回合，其未落定预写作废回收（latest-state / single-turn）。
-                # 幂等命中已在上面 return，能走到这里必是一次新生成。
-                if bid:
-                    try:
-                        prev = await _claim_turn(self.env, user, unit, bid, now)
-                        if prev and prev != bid:
-                            h = await _load_hist(self.env, user, unit)
-                            hp = _prune_pending(h, prev)
-                            if len(hp) != len(h):
-                                await _save_hist(self.env, user, unit, hp)
-                    except Exception as e:
-                        print(f"[turn] {user}/{unit} claim failed: {type(e).__name__}: {e}")
-                try:
-                    msgs = to_messages(unit, history, tz_offset, lif, contact)
-                    if directive:
-                        msgs.append({"role": "user", "content": directive})
-                    out = await run_chain(msgs)
-                    parsed = parse_chat(out.get("content") or "")
-                    parts = split_reply(unit, out.get("content") or "")
-                    out["content"] = "\n".join(parts)
-                    print(f"chat reply unit={unit} bubbles={len(parts)}")
-                except RuntimeError as e:
-                    print(f"chat failure unit={unit}: {e}")
-                    return False, {"error": str(e)}
-                # 这组 t 是消息的正式身份：随 parts 原样回给前端，发泡/落盘签同一个 t，
-                # 服务端预写与客户端落盘对同一条消息产出同一条镜像记录（合流按 who|text|t 判重）
-                t0 = cloud_npc.now_ms() if parts else 0
-                out["parts"] = [{"text": p, "t": t0 + i} for i, p in enumerate(parts)]
-                # 写前判活动：本回合已被更新的消息取代 → 丢弃，既不预写也不推
-                # lastAi/生活账。客户端此刻已 abort、已作废上屏，滞后回复若落库
-                # 只会在下次预温复活成重复。回包照旧返回，客户端自己按 cancelled 弃用。
-                if bid:
-                    try:
-                        if not await _is_active_turn(self.env, user, unit, bid):
-                            print(f"chat superseded unit={unit} bid={bid[:12]} discard")
-                            return True, out
-                    except Exception as e:
-                        print(f"[turn] {user}/{unit} active check failed: {type(e).__name__}: {e}")
-                try:
-                    if parts:
-                        hist = await _load_hist(self.env, user, unit)
-                        hist.extend({"who": "ai", "pending": True,
-                                     **({"bid": bid} if bid else {}), **q} for q in out["parts"])
-                        await _save_hist(self.env, user, unit, hist)
-                        # 只记 lastAi，不推水位：这条回复还没送到浏览器
-                        await _note_ai(self.env, user, unit, t0 + len(parts) - 1,
-                                       mark_seen=False)
-                except Exception as e:
-                    print(f"[hist] {user}/{unit} reply save failed: {type(e).__name__}: {e}")
-                try:
-                    await life.save(self.env, user, unit, life.apply_chat(lif, parsed, now))
-                except Exception as e:
-                    print(f"[life] {user}/{unit} save failed: {type(e).__name__}: {e}")
-                return True, out
+            if unit in PERSONAS:
+                await convo.set_tz(self.env, user, tz_offset)
+                history = _rows_to_hist(await convo.recent(self.env, user, unit, 30))
+            else:
+                history = [] if practice else sanitize_history(body.get("history"))
+            life_state, contact = None, None
+            if unit in PERSONAS:
+                contact = await _contact(self.env, unit) or {}
+                life_state = life.settle(await life.load(self.env, user, unit),
+                                         contact, cloud_npc.now_ms(), tz_offset)
+            try:
+                resp = await js_fetch(
+                    AUTH_TOKENS_URL,
+                    method="POST",
+                    headers={"x-goog-api-key": env_key("GEMINI_API_KEY"),
+                             "Content-Type": "application/json"},
+                    body=json.dumps(build_token_payload(
+                        unit, history, tz_offset, life_state, contact, practice,
+                        VOICE_BY_ID["persona-Fiona"] if practice else None)),
+                )
+                if resp.status != 200:
+                    detail = await resp.text()
+                    return Response.json(
+                        {"error": "Gemini 拒绝签发", "status": resp.status,
+                         "detail": detail[:400]}, status=502)
+                data = await resp.json()
+            except Exception as e:
+                return Response.json(
+                    {"error": "签发失败", "type": type(e).__name__,
+                     "detail": str(e)[:300]}, status=502)
+            return Response.json({"token": data["name"], "model": MODEL})
 
-            gen_task = run_in_background(_gen())
-            wait_until(gen_task)
-            ok, out = await gen_task
-            return Response.json(out, status=200 if ok else 502)
-
-        # ── 通话点评：挂断后前端把整段转写发来，一次性返回逐句建议 + 总评 ──
+        # ── call review ──────────────────────────────────────────────────
         if request.method == "POST" and path.endswith("/call-review"):
-            if not user:
-                return Response.json({"error": "请先登录"}, status=401)
             try:
                 body = await request.json()
             except Exception:
@@ -951,29 +624,42 @@ class Default(WorkerEntrypoint):
             turns = clean_call_turns(body.get("turns"))
             if not any(t["who"] == "me" for t in turns):
                 return Response.json({"error": "没有可点评的用户发言"}, status=400)
-            print(f"call review unit={unit} turns={len(turns)}")
             try:
                 out = await run_chain(call_review_messages(turns))
             except RuntimeError as e:
-                print(f"call review failure unit={unit}: {e}")
                 return Response.json({"error": str(e)}, status=502)
             raw = out.get("content", "")
             try:
                 review = clean_review(_review_json(raw))
             except ValueError as e:
-                # 解析失败按上游失败处理：前端拿到 502 就可以重试
                 print(f"call review parse failure unit={unit}: {e} raw={raw[:300]!r}")
                 return Response.json({"error": "点评结果解析失败"}, status=502)
             return Response.json(review)
 
-        # ── Web Push：公钥 / 订阅登记 ──
-        if request.method == "GET" and path.endswith("/push/pubkey"):
-            return Response(vapid_pubkey(self.env),
-                            headers={"Content-Type": "text/plain"})
-
-        if request.method == "POST" and path.endswith("/push/subscribe"):
+        # ── profile ──────────────────────────────────────────────────────
+        if request.method == "GET" and path.endswith("/profile"):
             if not user:
                 return Response.json({"error": "请先登录"}, status=401)
+            obj = await self.env.DATA.get(f"{user}/avatar.txt")
+            avatar = (await obj.text()) if obj is not None else ""
+            return Response.json({"user": user, "avatar": avatar})
+
+        if request.method == "PUT" and path.endswith("/avatar"):
+            try:
+                body = await request.json()
+            except Exception:
+                return Response.json({"error": "请求体不是合法 JSON"}, status=400)
+            data = body.get("data") or ""
+            if not (data.startswith("data:image/") and len(data) < 120_000):
+                return Response.json({"error": "头像只收 120KB 内的图片 dataURL"}, status=400)
+            await self.env.DATA.put(f"{user}/avatar.txt", data)
+            return Response.json({"ok": True})
+
+        # ── Web Push ─────────────────────────────────────────────────────
+        if request.method == "GET" and path.endswith("/push/pubkey"):
+            return Response(vapid_pubkey(self.env), headers={"Content-Type": "text/plain"})
+
+        if request.method == "POST" and path.endswith("/push/subscribe"):
             try:
                 body = await request.json()
             except Exception:
@@ -995,11 +681,7 @@ class Default(WorkerEntrypoint):
             print(f"[push] {user} subscribe d={dev or '-'} total={len(subs)}")
             return Response.json({"ok": True, "count": len(subs)})
 
-        # ── 通知偏好：iOS 消息设置三档 ──
-        # off = 完全不提醒；ticker = 只提示有消息（不带正文）；preview = 横幅带内容。
         if request.method == "PUT" and path.endswith("/prefs"):
-            if not user:
-                return Response.json({"error": "请先登录"}, status=401)
             try:
                 body = await request.json()
             except Exception:
@@ -1007,19 +689,12 @@ class Default(WorkerEntrypoint):
             notif = body.get("notif")
             if notif not in ("off", "ticker", "preview"):
                 return Response.json({"error": "notif 只收 off/ticker/preview"}, status=400)
-            state = await cloud_npc.load_state(self.env, user)
-            state["notif"] = notif
-            await cloud_npc.save_state(self.env, user, state)
+            await convo.set_notif(self.env, user, notif)
             return Response.json({"ok": True, "notif": notif})
 
-        # run_worker_first 打开后，所有请求都先过 Python：
-        # 静态文件（/、css、fires 等）必须在这里代发，否则前端会 404。
+        # ── static assets ────────────────────────────────────────────────
         if request.method in ("GET", "HEAD"):
             res = await self.env.ASSETS.fetch(request)
-            # 落持久缓存策略（默认只有 1 小时，iOS 主屏 app 每次重开都整个
-            # 重新拉）：前端代码/音频/图 1 天 + 7 天 stale-while-revalidate，
-            # 入口 HTML no-cache 保留 etag 304 —— 版本照旧当天见效，其余
-            # 资源杀 app 冷启几乎不再发请求。
             p = urlsplit(str(request.url)).path
             kind = p.rsplit(".", 1)[-1].lower() if "." in p.rsplit("/", 1)[-1] else ""
             long_c = kind in ("js", "css", "m4a", "webp", "jpg", "jpeg", "png", "svg", "ico")
@@ -1029,308 +704,167 @@ class Default(WorkerEntrypoint):
                 headers = {k: v for k, v in res.headers.items()
                            if k.lower() != "cache-control"}
                 headers["cache-control"] = cc
-                return Response(res.body, status=res.status,
-                                headers=headers)
+                return Response(res.body, status=res.status, headers=headers)
             return res
 
-        if request.method != "POST":
-            return Response.json({"error": "用 POST"}, status=405)
+        return Response.json({"error": "用 POST"}, status=405)
 
-        # 签发 token 是最后兜底的 POST 落点，门禁搁在这儿
-        if not user:
-            return Response.json({"error": "请先登录"}, status=401)
-
-        try:
-            body = await request.json()
-        except Exception:
-            return Response.json({"error": "请求体不是合法 JSON"}, status=400)
-
-        unit = body.get("unit")
-        if unit not in UNITS and unit not in PERSONAS:
-            return Response.json(
-                {
-                    "error": f"unit 必须是 {sorted(UNITS | PERSONAS)} 之一",
-                },
-                status=400,
-            )
-
-        practice = bool(body.get("practice"))
-        if practice and unit not in UNITS:
-            return Response.json({"error": "practice 只收 unit-XX"}, status=400)
-
-        # 聊天历史（可选）：上次聊过的内容钉进 prompt，模型有记忆
-        history = [] if practice else sanitize_history(body.get("history"))
-        tz_offset = clamp_tz(body.get("tz"))
-
-        # 通话也带上他此刻的生活（与 /chat 同一份状态）
-        life_state, contact = None, None
-        if unit in PERSONAS:
-            contact = await _contact(self.env, unit) or {}
-            life_state = life.settle(await life.load(self.env, user, unit),
-                                     contact, cloud_npc.now_ms(), tz_offset)
-
-        # 调 Gemini 签发 token；fetch / 非 200 / 解析三种不快活统一 502
-        try:
-            resp = await js_fetch(
-                AUTH_TOKENS_URL,
-                method="POST",
-                headers={
-                    "x-goog-api-key": env_key("GEMINI_API_KEY"),
-                    "Content-Type": "application/json",
-                },
-                body=json.dumps(build_token_payload(
-                    unit, history, tz_offset, life_state, contact, practice,
-                    VOICE_BY_ID["persona-Fiona"] if practice else None)),
-            )
-            if resp.status != 200:
-                detail = await resp.text()
-                return Response.json(
-                    {"error": "Gemini 拒绝签发", "status": resp.status,
-                     "detail": detail[:400]},
-                    status=502)
-            data = await resp.json()
-        except Exception as e:
-            return Response.json(
-                {"error": "签发失败", "type": type(e).__name__,
-                 "detail": str(e)[:300]},
-                status=502)
-
-        # 只把 token 的名字返给前端，其余字段不带出去
-        return Response.json({"token": data["name"], "model": MODEL})
-
-    # ── cron 每 5 分钟：替「页面已关」的用户代打主动消息（片 3b）────
-    # 流程：心跳判定 → contact.json（ASSETS，与浏览器同源）→ 云册抽签 →
-    #   调链生成 → 写 {user}/hist/{unit}.json 镜像。推送通知是片 3c：
-    #   pusher 解锁后接进来。浏览器上线时 openChat 的云端合流会把
-    #   消息摆回本地一册。
+    # ── scheduler ────────────────────────────────────────────────────────
     async def scheduled(self, controller, *rest):
         env = self.env
-        now = cloud_npc.now_ms() / 1000.0
-        # 1 分钟一拍只跑轻量通知器；5 分钟那拍跑日界/主动代打。
+        now = convo.now_ms()
         if getattr(controller, "cron", "") == "* * * * *":
-            await self._notify_sweep(env, now)
+            await self._due_sweep(env, now)
+            await self._push_sweep(env)
         else:
-            await self._cron_sweep(env, now=now)
+            await self._heavy_sweep(env, now / 1000.0)
 
-    # 1 分钟通知补发员：事件管线（/hist/unseen inline 直推）之后只兜没赶上
-    # 的行——页面报账失败、被屏上余温否决、页面死透的 pending。真源是每线
-    # 已读位点，不再判全人在不在。两道闸同一套：批次没落完不抢跑；15s 内
-    # 有设备活动不推同屏。
-    async def _notify_sweep(self, env, now: float) -> None:
-        bind_worker_env(env)
-        auth.bind_r2(env)
-        now_ms = now * 1000.0
-        users = await _load_users(env)
-        for user in users:
-            state = await cloud_npc.load_state(env, user)
-            if _recent_activity(state, now_ms):
-                continue
-            changed = False
-            for unit in PERSONAS:
-                if not unit.startswith("persona-"):
-                    continue
-                last = _last_ai(state, unit)
-                if last and last <= _seen_at(state, unit):
-                    continue
-                hist = await _load_hist(env, user, unit)
-                if _pending_in_flight(hist, now_ms) \
-                        and _presenter_alive(state, now_ms):
-                    rows = _ai_rows(hist)
-                    print(f"[sweep] hold {user}/{unit} last={_last_ai(state, unit)} "
-                          f"seen={_seen_at(state, unit)} pendingT={int(rows[0]['t']) if rows else 0}")
-                    continue  # 批次在途且表演者气息在：不抢跑；气息断早接管
-                # 走到这里 = 无 pending，或 pending 但表演者已死（offline=True
-                # 允许接管批尾 pending 行，不用陪等 10 分钟）
-                newest = _newest_ai(hist, now_ms, offline=True)
-                if newest is None:
-                    continue
-                t = int(newest["t"])
-                changed = _set_last_ai(state, unit, t) or changed
-                if t <= _seen_at(state, unit):
-                    continue
-                contact = {"name": NAMES.get(unit, unit)}
-                await self._push(env, user, unit, contact, str(newest.get("text") or ""))
-                _mark_seen(state, unit, t)
-                changed = True
-            if changed:
-                await cloud_npc.save_state(env, user, state)
-
-    # 一轮 cron 的主体（scheduled 与自检路由共用）。逐离线用户抽签代打。
-    async def _cron_sweep(self, env, now: float, one_user: str | None = None, force: bool = False) -> tuple[list, list]:
-        """one_user 传值 = 自检模式：只跑该用户、绕过心跳判定；正常轮轮转
-        HEAVY_USERS_PER_TICK 个用户（免费版每次 50 子请求的上限）。
-        force 穿透到底层抽签（仍守窗口与名额）。返回本轮真中签并写库的 user/unit。"""
-        bind_worker_env(env)
-        auth.bind_r2(env)
-        users = await _load_users(env)
-
-        order = list(users)
-        if one_user is not None:
-            order = [u for u in order if u == one_user]
-            slot_minutes = 5
-        else:
-            if order:
-                k = int(now // 300) % len(order)
-                order = (order[k:] + order[:k])[:HEAVY_USERS_PER_TICK]
-            slot_minutes = 5 * max(1, -(-len(users) // HEAVY_USERS_PER_TICK))
-
-        offline, wrote, diag = [], [], []
-        for user in order:
-            await self._life_sweep(env, user, now)
-            state = await cloud_npc.load_state(env, user)
-            if one_user is None and not _offline(state, now * 1000.0):
-                continue  # 心跳活着（在线）或从未登录 → 浏览器自己管
-            offline.append(user)
-            ledgers = state.get("ledger") if isinstance(state.get("ledger"), dict) else {}
-            eng = state.get("eng") if isinstance(state.get("eng"), dict) else {}
-            hits = 0
-            for unit in PERSONAS:
-                if not unit.startswith("persona-"):
-                    continue
-                # 画像真源是 contact.json（ASSETS 与浏览器同一份文件）
-                contact = await _contact(env, unit)
-                if not isinstance(contact, dict):
-                    diag.append({"unit": unit, "err": "contact load failed"})
-                    continue
-                # 代打让渡：批尾有未过接管时限的预写（隐身页在途或刚替我们
-                # 生成了），这一格不抽、不扣名额；下一 tick 再说。
-                # latest-state 不变量下再加一道：屏幕最新一条若是欠着的用户
-                # 消息，这格也让位——那本该是对话线回答它，不是代打插话重讲旧话题。
-                hist_now = await _load_hist(env, user, unit)
-                if _pending_in_flight(hist_now, now * 1000.0):
-                    diag.append({"unit": unit, "yield": "pending in flight"})
-                    continue
-                if _reply_owed(hist_now):
-                    diag.append({"unit": unit, "yield": "reply owed"})
-                    continue
-                led = ledgers.get(unit)
-                led = led if isinstance(led, dict) else {}
-                # 云册账本条目规整天界：跨天/空账一律当日 0 起步（date 缺失
-                # 会让 pick 的次日重置永远糊着 null）
-                today = cloud_npc.day_stamp(now)
-                if led.get("date") != today:
-                    led = {"date": today, "sent": 0}
-                e = eng.get(unit)
-                e = (e if isinstance(e, (int, float)) else cloud_npc.ENG_DEFAULT) * cloud_npc.ENG_DECAY
-                # 命中先记账：生成失败也不重抽（不浪费名额，同浏览器的重试语义）
-                hit = cloud_npc.pick_proactive(contact, led, e, now, force=force,
-                                               slot_minutes=slot_minutes)
-                s = contact.get("proactive") or {}
-                left = cloud_npc.minutes_left_cst(s.get("windows"), now)
-                diag.append({"unit": unit, "left": left, "sent": int(led.get("sent") or 0),
-                             "eng": round(e, 4), "hit": hit})
-                if not hit:
-                    eng[unit] = e
-                    continue
-                ledgers[unit] = {"date": today, "sent": int(led.get("sent") or 0) + 1,
-                                 "lastAt": cloud_npc.now_ms()}
-                eng[unit] = e
-                hits += 1
-                t_last = await self._proactive(env, user, unit, contact)
-                if t_last:
-                    _set_last_ai(state, unit, t_last)
-                wrote.append(f"{user}/{unit}")
-
-            await cloud_npc.save_state(env, user, {**state, "ledger": ledgers, "eng": eng})
-        if offline:
-            print(f"[cron] offline passed={'watch' if one_user is None else 'kick'}={offline} wrote={wrote}")
-        return wrote, diag
-
-    # 每人每天一次日界：把他的一天生成出来。在线离线都推进 —— 他的时间线
-    # 不因你在不在线而停。失败先记 attempt，30 分钟内不重试，别刷链。
-    async def _life_sweep(self, env, user: str, now: float) -> None:
-        now_ms = now * 1000.0
-        today = life.day_stamp(now_ms)
-        for unit in PERSONAS:
-            if not unit.startswith("persona-"):
-                continue
-            try:
-                lif = await life.load(env, user, unit)
-                if not life.needs_day(lif, now_ms):
-                    continue
-                contact = await _contact(env, unit)
-                if not isinstance(contact, dict):
-                    continue
-                lif = life.settle(lif, contact, now_ms)
-                lif = life.mark_attempt(lif, now_ms)
-                await life.save(env, user, unit, lif)
-                hist = await _load_hist(env, user, unit)
-                out = await run_chain(
-                    life.day_messages(unit, contact, lif, sanitize_history(hist), now_ms))
-                day = life.parse_day(out.get("content") or "")
-                await life.save(env, user, unit, life.apply_day(lif, day, today, now_ms))
-                print(f"[life] {user}/{unit} day rolled events={len(day['events'])}")
-            except Exception as e:
-                print(f"[life] {user}/{unit} day failed: {type(e).__name__}: {str(e)[:120]}")
-
-    # 离线代打的生成与落库。链上任何一层失败就整个放弃本条：名额已扣，
-    # 别让半成品消息写进镜像。返回最后一条的 t，供状态记 lastAi。
-    async def _proactive(self, env, user: str, unit: str, contact: dict) -> int | None:
-        try:
-            hist = await _load_hist(env, user, unit)
-            seed = cloud_npc.now_ms()
-            now = seed
-            lif = life.settle(await life.load(env, user, unit), contact, now)
-            msgs = to_messages(unit, sanitize_history(hist), DEFAULT_TZ_OFFSET, lif, contact)
-            msgs.append({"role": "user", "content": PRO_REQ})
-            out = await run_chain(msgs)
-            parts = split_reply(unit, out.get("content", ""))
-        except Exception:
-            return None  # 名额已扣；下一天/下一 tick 再说
-        if not parts:
-            return None
-        # 代打也是「一个回合」：认领活动回合后，被用户新消息取代就整段丢弃——
-        # 生成期间你回了话，这条插话就不该再落库（和 /chat 同一纪律，单一原则）。
-        bid = f"cron-{int(seed)}"
-        try:
-            await _claim_turn(env, user, unit, bid, seed)
-            if not await _is_active_turn(env, user, unit, bid):
-                print(f"[cron] {user}/{unit} proactive superseded at write: discard")
-                return None
-        except Exception as e:
-            print(f"[turn] cron {user}/{unit} claim failed: {type(e).__name__}: {e}")
-        # 只落库：推送由 1 分钟通知器统一按「离线 + 水位」发
-        t0 = cloud_npc.now_ms()
-        hist.extend({"who": "ai", "text": part, "t": t0 + i, "bid": bid}
-                    for i, part in enumerate(parts))
-        await _save_hist(env, user, unit, hist)
-        return t0 + len(parts) - 1
-
-    # 把一条离线消息从系统横幅送出去（iOS 桌面 web app = 横幅，无图标角标）。
-    # notif 三档：off 不发；ticker 只提示有消息；preview 带正文。失效订阅
-    # （Apple/浏览器 404/410）顺手清出名单，横幅链路断了不影响消息本体。
-    async def _push(self, env, user: str, unit: str, contact: dict, text: str) -> None:
-        try:
-            state = await cloud_npc.load_state(env, user)
-        except Exception:
-            state = {}
-        notif = state.get("notif", "preview")
-        if notif not in ("ticker", "preview"):
+    async def _kick_due(self, env, user: str, unit: str, contact: dict) -> None:
+        now = convo.now_ms()
+        conv = await convo.load(env, user, unit, now)
+        if conv["reply_due_at"] is None or int(conv["reply_due_at"]) > now:
             return
+        if conv["turn_id"] and int(conv["turn_expires_at"] or 0) > now:
+            return
+        tz = int((await convo.prefs(env, user))["tz_offset"])
+        if convo.status(contact, conv, user, unit, now, tz) == "offline":
+            task = run_in_background(convo.defer_to_wake(
+                env, user, unit, contact, now, tz, conv["turn_kind"]))
+        else:
+            task = run_in_background(self._run_turn(env, user, unit, contact))
+        wait_until(task)
+
+    async def _run_turn(self, env, user: str, unit: str, contact: dict) -> None:
+        now = convo.now_ms()
+        turn, row = await convo.claim(env, user, unit, now)
+        if not turn:
+            return
+        try:
+            tz = int((await convo.prefs(env, user))["tz_offset"])
+            conv = await convo.load(env, user, unit, now)
+            if convo.status(contact, conv, user, unit, now, tz) == "offline":
+                await convo.defer_to_wake(env, user, unit, contact, now, tz, row["turn_kind"])
+                return
+            hist = _rows_to_hist(await convo.recent(env, user, unit, 30))
+            lif = life.settle(await life.load(env, user, unit), contact, now, tz)
+            msgs = to_messages(unit, hist, tz, lif, contact)
+            kind = row["turn_kind"] or "reply"
+            if kind == "proactive":
+                msgs.append({"role": "user", "content": PRO_REQ})
+            elif kind == "burst":
+                msgs.append({"role": "user", "content": BURST_REQ})
+            out = await run_chain(msgs)
+            parts = split_reply(unit, out.get("content") or "")
+            if not parts:
+                raise RuntimeError("empty reply")
+            done = convo.now_ms()
+            glow = int((contact.get("glow") or 15) * 60_000)
+            if not await convo.complete(env, user, unit, turn, parts, done, glow):
+                print(f"[turn] {user}/{unit} superseded, discard")
+                return
+            await life.save(env, user, unit,
+                            life.apply_chat(lif, parse_chat(out.get("content") or ""), done))
+            if kind == "reply":
+                await convo.maybe_burst(env, user, unit, contact, done)
+            await self._push_unit(env, user, unit)
+            print(f"[turn] {user}/{unit} kind={kind} bubbles={len(parts)}")
+        except Exception as e:
+            print(f"[turn] {user}/{unit} failed: {type(e).__name__}: {str(e)[:160]}")
+            await convo.fail(env, user, unit, turn, now + 60_000, now)
+
+    async def _due_sweep(self, env, now: int) -> None:
+        for user, unit in await convo.due(env, now, limit=4):
+            contact = await _contact(env, unit)
+            if contact:
+                await self._run_turn(env, user, unit, contact)
+
+    async def _push_sweep(self, env) -> None:
+        for user in await convo.users_with_unpushed(env, 20):
+            await self._push_user(env, user)
+
+    async def _push_user(self, env, user: str) -> None:
+        for unit in sorted(PERSONAS):
+            await self._push_unit(env, user, unit)
+
+    async def _push_unit(self, env, user: str, unit: str) -> None:
+        now = convo.now_ms()
+        pref = await convo.prefs(env, user)
+        if pref["notif"] == "off":
+            await convo.mark_pushed(env, user, unit, now)
+            return
+        conv = await convo.load(env, user, unit, now)
+        nxt = await convo.next_push(env, user, unit, int(conv["user_seen_seq"] or 0))
+        if not nxt:
+            return
+        if await convo.visible_devices(env, user, now):
+            return  # in the app; /away will retry
         subs = await _load_subs(env, user)
         if not subs:
-            print(f"[push] {user}/{unit} no subscriptions")
+            await convo.mark_pushed(env, user, unit, now)
             return
-        payload = {"title": str(contact.get("name") or unit),
-                   "body": text if notif == "preview" else "给你发来一条新消息",
+        payload = {"title": NAMES.get(unit, unit),
+                   "body": nxt["text"] if pref["notif"] == "preview" else "给你发来一条新消息",
                    "unit": unit}
-        keep, gone, results = [], [], []
+        keep, gone, codes = [], [], []
         for sub in subs:
             try:
                 res = await env.PUSHER.fetch(
                     "https://pusher.local/send", method="POST",
                     headers={"Content-Type": "application/json"},
-                    body=json.dumps({"subscription": sub, "payload": payload}, ensure_ascii=False))
-                res = await res.json()
-                code = int(res.get("statusCode") or 0)
+                    body=json.dumps({"subscription": sub, "payload": payload},
+                                    ensure_ascii=False))
+                code = int((await res.json()).get("statusCode") or 0)
             except Exception as e:
                 code = 0
-                print(f"[push] banner send failed: {type(e).__name__} {str(e)[:120]}")
-            results.append((sub.get("d") or "-", str(sub.get("endpoint") or "")[-8:], code))
+                print(f"[push] send failed: {type(e).__name__} {str(e)[:120]}")
+            codes.append(code)
             if code in (404, 410):
                 gone.append(sub.get("endpoint"))
-                continue
-            keep.append(sub)
-        print(f"[push] {user}/{unit} notif={notif} targets={results} stale={len(gone)}")
+            else:
+                keep.append(sub)
         if gone:
-            await _save_subs(env, user, [s for s in keep if s.get("endpoint") not in set(gone)])
+            await _save_subs(env, user, keep)
+        print(f"[push] {user}/{unit} targets={[(s.get('d') or '-', c) for s, c in zip(subs, codes)]}")
+        if codes and all(c == 0 or c >= 500 for c in codes) and keep:
+            return  # transient failure: retry next tick
+        await convo.mark_pushed(env, user, unit, now)
+
+    async def _heavy_sweep(self, env, now: float) -> None:
+        users = list(await _load_users(env))
+        if users:
+            k = int(now // 300) % len(users)
+            users = (users[k:] + users[:k])[:HEAVY_USERS_PER_TICK]
+        for user in users:
+            await self._life_sweep(env, user, now)
+            await self._proactive_sweep(env, user, int(now * 1000))
+
+    async def _proactive_sweep(self, env, user: str, now: int) -> None:
+        tz = int((await convo.prefs(env, user))["tz_offset"])
+        for unit in sorted(PERSONAS):
+            contact = await _contact(env, unit)
+            if not contact:
+                continue
+            if await convo.proactive(env, user, unit, contact, now, tz):
+                await self._run_turn(env, user, unit, contact)
+
+    async def _life_sweep(self, env, user: str, now: float) -> None:
+        now_ms = now * 1000.0
+        for unit in sorted(PERSONAS):
+            try:
+                lif = await life.load(env, user, unit)
+                if not life.needs_day(lif, now_ms):
+                    continue
+                contact = await _contact(env, unit)
+                if not contact:
+                    continue
+                lif = life.mark_attempt(life.settle(lif, contact, now_ms), now_ms)
+                await life.save(env, user, unit, lif)
+                hist = _rows_to_hist(await convo.recent(env, user, unit, 12))
+                out = await run_chain(life.day_messages(
+                    unit, contact, lif, sanitize_history(hist), now_ms))
+                day = life.parse_day(out.get("content") or "")
+                await life.save(env, user, unit,
+                                life.apply_day(lif, day, life.day_stamp(now_ms), now_ms))
+                print(f"[life] {user}/{unit} day rolled events={len(day['events'])}")
+            except Exception as e:
+                print(f"[life] {user}/{unit} day failed: {type(e).__name__}: {str(e)[:120]}")

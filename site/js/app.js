@@ -1,6 +1,5 @@
-import { initChat, fmtRowTime } from "./live.js?v=20261106-1";
-import { loadContacts } from "./personas.js?v=20261103-4";
-import { setViewerKey } from "./rhythm.js?v=20261024-3";
+import { initChat, fmtRowTime } from "./live.js?v=20261108-1";
+import { loadContacts } from "./personas.js?v=20261108-1";
 import { initCalls } from "./calls.js?v=20261025-1";
 import { initPractice } from "./practice.js?v=20261103-2";
 // 五个主 tab + 两个子页（聊天 / 通话详情）。
@@ -40,6 +39,7 @@ function showView(name) {
   // 每次进 Calls 重画列表（点评可能刚在后台生成完）
   if (name === "calls") calls.refresh();
   if (name === "practice") practice.refresh();
+  if (name === "chats") chat.refresh();
 }
 
 const calls = initCalls({
@@ -113,16 +113,13 @@ async function boot() {
   loadPeople();
   const status = await me();
   const user = status.user || await showAuth(); // 登录/注册成了才会接资料和云镜
-  setViewerKey(user);
-  chat.refreshStatuses();
   paintProfile(status.user);
   startHeartbeat();
-  chat.prewarmHist();
+  chat.refresh();
 }
 
-// ── 心跳：每台设备每 3 分钟 /ping 一次报活（带设备 id，presence 按台算）──
-// 离开 App 用 /away beacon 只标自己这台，别压正在别处活跃的设备。
-// 设备 id 是本机常驻匿名标识：人体一人，设备各一座。
+// ── 在场：可见页每 60s /ping；退后台/关页立刻 /away。服务端据此决定
+// 消息落库后是“同屏”还是“推横幅”，不再用租约猜。──
 const DEV_ID = (() => {
   try {
     let id = localStorage.getItem("fluentchat:device");
@@ -131,29 +128,30 @@ const DEV_ID = (() => {
   } catch { return "anon"; }
 })();
 
-function startHeartbeat() {
-  // 页面在后台时不报活：否则会把 /away 刚标好的离线状态又清掉
-  const beat = () => {
-    if (document.visibilityState === "hidden") return;
-    fetch("/ping", { method: "POST", keepalive: true, headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ d: DEV_ID }) }).catch(() => {});
-  };
-  beat();
-  setInterval(beat, 60_000); // lease 工期一半：租约 ≥ 2×心跳，可见页不误判
-}
-
-// ── 回来信号：通知轨（每线 seen/unseen 自报账）不再负向判在场；心跳只剩
-// 为 cron 代打让渡判定续租，awayBeacon 整条退役（服务端端点供旧缓存兼容）。──
-document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState !== "hidden") {
-    fetch("/ping", { method: "POST", keepalive: true, headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ d: DEV_ID }) }).catch(() => {});
-  }
-});
-window.addEventListener("pageshow", () => {
+function ping() {
   fetch("/ping", { method: "POST", keepalive: true, headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ d: DEV_ID }) }).catch(() => {});
+}
+function away() {
+  const body = JSON.stringify({ d: DEV_ID });
+  if (navigator.sendBeacon) {
+    navigator.sendBeacon("/away", new Blob([body], { type: "application/json" }));
+  } else {
+    fetch("/away", { method: "POST", keepalive: true,
+      headers: { "Content-Type": "application/json" }, body }).catch(() => {});
+  }
+}
+function startHeartbeat() {
+  ping();
+  setInterval(() => { if (document.visibilityState === "visible") ping(); }, 60_000);
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") away();
+  else ping();
 });
+window.addEventListener("pageshow", ping);
+window.addEventListener("pagehide", away);
 
 // ── Me 页个人资料：用户名 + 头像（点行 → 选图 → 压成 128px webp dataURL 上传）──
 function paintProfile(name) {

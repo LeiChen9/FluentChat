@@ -377,3 +377,15 @@ npx wrangler deploy                  # 改了 site/ 必须部署，workers.dev �
 - R2 直读：新 wrangler 默认本地；生产读必须 `--remote` + `CLOUDFLARE_ACCOUNT_ID`，已验证。
 - 复核：`py_compile` / `node --check` 过；`smoke.mjs` 有随机 busy 抽样导致的既有 flaky（同代码偶发 `reply lost: 0`），本次有完整 PASS 记录。
 - 残留：`_presenter_alive` 仍是用户级，别的线程的 pending 会等本线程气息断才推；Apple `201` 仍无投递回执。
+
+## 消息链 v3：服务端时间线 + D1（2026-11-08）
+
+- 事故回放：riceball 11-07 22:33 给 offline 的 chole 发消息，回复 7s 后生成却被 `chat superseded ... discard` 丢弃；`lastAi` 没更新，1 分钟通知器全程没有 `[push]`，直到 23:25 回前台由客户端补写 R2 才看到。根因是 `state.json` 整册读改写把 `activeTurn` 回滚成 16:05 的 cron bid；同一分钟 leo 也中招。
+- 结构：消息链迁 D1（`schema.sql`）。`conversations` 一行一会话（turn/水位/作息账本），`messages` 一行一泡（全局 AUTOINCREMENT id 即游标），`devices` 在场，`prefs` 通知/时区/迁移标记。R2 继续放头像、prompt、生活状态、订阅和一次性历史迁移源。
+- 发送/回复：`POST /messages` 只落用户消息 + 排期；`GET /conversation` 轮询时 `_kick_due` 在后台 claim + 生成，cron 1 分钟兜底。`activeTurn` 字段消失；claim 是单条原子 UPDATE，写库用 D1 batch 带 turn fence，迟到的旧回合插 0 行。
+- Offline：`convo.status` 用 contact.json 的 `hoursWeekend/hours/holidays`（周末表修对），offline 时 `wake_at + 延迟` 才排期；调度器到点前不读、不生成、不主动、不推送。用户消息在离线期只落库，醒来才推进 `npc_read_seq` 并回复。
+- Push：按消息 outbox（`pushed_at`）推，不再依赖 `lastAi/notified`；有可见设备（`/ping` 可见 + `/away` 立即置 0，130s 可见窗）不推，退后台 `/away` 立即补推；生成后顺手推一次。
+- 客户端：文本链路删掉浏览器节奏机/主动调度/本地 hist 镜像；发送乐观气泡 + client_id 幂等重试，打开/可见时 2s 轮询，已读 `/seen`，状态和 typing 全由服务端返回。通话仍浏览器直连 Gemini，挂断把转写回传 `/transcript`（隐藏行进模型记忆，通话行可点开本机记录）。
+- 迁移：首次 `/conversations`、`/conversation`、`/messages` 任一调用触发 `_migrate`，把 R2 `{user}/hist/*.json` + `state.json.notified` 一次性导入 D1（按 t 排、按 notified 还原未读、标记 `prefs.migrated`）。
+- 线上落地：本地 `wrangler dev --local` 已实测注册/发送/轮询/生成/burst/已读/ping/away/transcript/reset/迁移标记；`py_compile`、`node --check`、`tools/smoke.mjs` 全 PASS。
+- 待手工：当前 API token 没有 D1 权限，需先 `wrangler login` 或用带 D1 Edit 的 token 执行 `wrangler d1 create fluentchat`，把 database_id 填进 `wrangler.jsonc`，再 `wrangler d1 execute fluentchat --remote --file schema.sql`；之后 `wrangler deploy`。
