@@ -74,6 +74,7 @@ export function initChat({ show, back, openCall }) {
   let pollBusy = false;
   let openSeq = 0;
   const pendingNodes = new Map(); // client_id -> 乐观气泡 node
+  const drawnIds = new Set();     // 已上屏的服务端消息 id
 
   let people = [];
   const statusMap = new Map(); // unit -> active/away/busy/offline
@@ -212,15 +213,21 @@ export function initChat({ show, back, openCall }) {
 
   function render(m) {
     if (m.hidden) return;
+    // 服务端会重发同一条（乐观气泡的 ack 与它自己的回声撞在一起），画过一次就不再画。
+    if (drawnIds.has(m.id)) return;
+    drawnIds.add(m.id);
     if (m.kind === "call") { addCallLine({ id: m.client_id, text: m.text }); return; }
     if (m.kind === "review") { addReviewCard(m.text); return; }
-    if (m.client_id && pendingNodes.has(m.client_id)) {
-      const node = pendingNodes.get(m.client_id);
-      node.dataset.id = m.id;
-      pendingNodes.delete(m.client_id);
-      return;
-    }
+    if (m.client_id && pendingNodes.has(m.client_id)) { settle(m.client_id, m.id); return; }
     addBubble(m.role === "me" ? "me" : "ai", m.text, m.t, { id: m.id });
+  }
+
+  // 乐观气泡对账：服务端 id 回来（ack 或回声），把气泡钉上 id 并摘出 pending。
+  function settle(clientId, id) {
+    const node = pendingNodes.get(clientId);
+    if (!node) return;
+    if (id) node.dataset.id = id;
+    pendingNodes.delete(clientId);
   }
 
   function updateHeader(data) {
@@ -331,6 +338,7 @@ export function initChat({ show, back, openCall }) {
     pendingMe = "";
     hideTyping();
     pendingNodes.clear();
+    drawnIds.clear();
     lastId = 0;
     lastSeenSent = 0;
     lastStamp = null;
@@ -368,9 +376,9 @@ export function initChat({ show, back, openCall }) {
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
     node.classList.remove("msg--fail");
     if (data.id) {
-      node.dataset.id = data.id;
-      if (data.id > lastId) lastId = data.id;
-      pendingNodes.delete(clientId);
+      // 乐观气泡就是这条服务端消息，它已经上屏了：回声别再画一遍。
+      settle(clientId, data.id);
+      drawnIds.add(data.id);
     }
     if (data.status === "offline") setChatState("Offline");
     poll();

@@ -106,6 +106,8 @@ let cursor = 2;
 const calls = [];
 let replySent = false;
 let allowReply = false;
+// 真机竞态：ack 落地后，先前那次轮询的回声才回来 —— 回声带着自己的 id 重发同一条。
+let sentCid = null;
 const initial = [
   { id: 1, role: "me", kind: "text", text: "Hello Leo", t: now - 5000, hidden: 0, client_id: null },
   { id: 2, role: "ai", kind: "text", text: "Hi Rice", t: now - 4000, hidden: 0, client_id: null },
@@ -140,13 +142,18 @@ globalThis.fetch = async (url, opts) => {
       if (!allowReply || replySent) return json({ unit, status: leoStatus, typing: false, wake_at: 0, reply_due_at: null, cursor, seen: 0, messages: [] });
       replySent = true;
       cursor = 101;
+      // 回声重发用户自己那条：ack 已经把它画过一次了。
       return json({ unit, status: leoStatus, typing: false, wake_at: 0, reply_due_at: null, cursor,
-        seen: 0, messages: [{ id: 101, role: "ai", kind: "text", text: "Midnight shimmer.", t: now, hidden: 0, client_id: null }] });
+        seen: 0, messages: [
+          { id: 100, role: "me", kind: "text", text: "hi", t: now, hidden: 0, client_id: sentCid },
+          { id: 101, role: "ai", kind: "text", text: "Midnight shimmer.", t: now, hidden: 0, client_id: null },
+        ] });
     }
     return json({ unit, status: leoStatus, typing: false, wake_at: 0, reply_due_at: null, cursor, seen: 0, messages: initial });
   }
   if (u === "/messages") {
     cursor = 100;
+    sentCid = JSON.parse(opts.body).client_id;
     return json({ id: 100, t: now, status: leoStatus, wake_at: 0, reply_due_at: now + 4000 });
   }
   if (u === "/token") return json({ token: "tok", model: "m" });
@@ -186,6 +193,8 @@ const sent = calls.find((c) => c.url === "/messages");
 if (!sent || sent.body.text !== "hi" || !sent.body.client_id) throw new Error("send not posted");
 await tick(1700);
 if (!body.children.some((n) => n.textContent === "Midnight shimmer.")) throw new Error("AI reply not rendered");
+const hiBubbles = body.children.filter((n) => n.textContent === "hi");
+if (hiBubbles.length !== 1) throw new Error(`own message drawn ${hiBubbles.length} times`);
 const seen = calls.filter((c) => c.url === "/seen").at(-1);
 if (!seen || seen.body.seq !== 101) throw new Error(`seen seq: ${seen?.body?.seq}`);
 console.log("✓ 发送落库、轮询收 AI 消息、已读回执 101");
