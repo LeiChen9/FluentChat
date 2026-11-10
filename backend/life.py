@@ -43,6 +43,12 @@ def day_stamp(now_ms: float, tz_offset: int = DEFAULT_TZ_OFFSET) -> str:
     return _local(now_ms, tz_offset).strftime("%Y-%m-%d")
 
 
+def next_midnight_ms(now_ms: float, tz_offset: int = DEFAULT_TZ_OFFSET) -> int:
+    dt = (_local(now_ms, tz_offset) + timedelta(days=1)).replace(
+        hour=0, minute=0, second=0, microsecond=0)
+    return int((dt.timestamp() + tz_offset * 60) * 1000)
+
+
 def part_of_day(hour: int) -> str:
     if 5 <= hour < 12:
         return "morning"

@@ -52,3 +52,37 @@ CREATE TABLE IF NOT EXISTS prefs (
   tz_offset INTEGER NOT NULL DEFAULT -480,
   migrated INTEGER NOT NULL DEFAULT 0
 );
+
+-- 调度真源：一行一个待办。state 只走 pending -> leased -> done|dead。
+-- 主动额度用「今天 pending/leased 的 proactive 行数」当预留，失败/死亡自动退额。
+CREATE TABLE IF NOT EXISTS jobs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user TEXT NOT NULL,
+  unit TEXT NOT NULL,
+  kind TEXT NOT NULL,          -- reply|burst|proactive|proactive_tick|life_day
+  state TEXT NOT NULL DEFAULT 'pending',
+  due_at INTEGER NOT NULL,
+  lease_until INTEGER NOT NULL DEFAULT 0,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  max_attempts INTEGER NOT NULL DEFAULT 4,
+  dedupe_key TEXT NOT NULL,
+  payload TEXT NOT NULL DEFAULT '{}',
+  last_error TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_jobs_dedupe ON jobs(dedupe_key);
+CREATE INDEX IF NOT EXISTS ix_jobs_due ON jobs(state, due_at);
+CREATE INDEX IF NOT EXISTS ix_jobs_owner ON jobs(user, unit, kind, state);
+
+-- 调度心跳：让「清扫没跑」可见，而不是静默卡死。
+CREATE TABLE IF NOT EXISTS cron_health (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  last_drain_at INTEGER NOT NULL DEFAULT 0,
+  pending INTEGER NOT NULL DEFAULT 0,
+  leased INTEGER NOT NULL DEFAULT 0,
+  dead INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  ensured_at INTEGER NOT NULL DEFAULT 0,
+  jobs_migrated INTEGER NOT NULL DEFAULT 0
+);

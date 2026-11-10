@@ -6,6 +6,7 @@ persona is actually available. Offline personas do nothing: no read, no model
 call, no push. The phone is a renderer, not a timing source."""
 
 import json
+import random
 import re
 from urllib.parse import urlsplit
 
@@ -408,12 +409,21 @@ class Default(WorkerEntrypoint):
 
         if request.method == "GET" and path.endswith("/health"):
             has = sum(bool(env_key(ep["env"])) for ep in ENDPOINTS.values())
+            try:
+                h = await convo.health(self.env)
+            except Exception:
+                h = {}
+            age = (convo.now_ms() - int(h.get("last_drain_at") or 0)) if h else None
             return Response.json({
                 "ok": True,
                 "model": MODEL,
                 "voice": VOICE,
                 "has_key": env_key("GEMINI_API_KEY") is not None,
                 "chain_ready": has,
+                "drain_age_ms": age,
+                "jobs": {"pending": int(h.get("pending") or 0) if h else 0,
+                         "leased": int(h.get("leased") or 0) if h else 0,
+                         "dead": int(h.get("dead") or 0) if h else 0},
             })
 
         if request.method == "GET" and path.endswith("/practice/plan"):
@@ -456,13 +466,13 @@ class Default(WorkerEntrypoint):
             mid, created = await convo.append(self.env, user, unit, "me", text, now,
                                               client_id=client_id)
             if created:
-                burst = int((contact.get("burst") or [0, 1])[1] or 0)
-                await convo.schedule(self.env, user, unit, "reply", due, now,
-                                     burst_left=burst)
+                await convo.enqueue(self.env, user, unit, "reply", due,
+                                    f"reply:{user}:{unit}:{mid}", {"msg_id": mid}, now)
                 await convo.bump_engagement(self.env, user, unit, now, warm)
                 print(f"[msg] {user}/{unit} id={mid} status={st} due={due}")
             else:
-                due = int(conv["reply_due_at"] or 0)
+                nxt = await convo.pending_due(self.env, user, unit)
+                due = int(nxt["due_at"]) if nxt else 0
             return Response.json({"id": mid, "t": now, "status": st,
                                   "wake_at": wake, "reply_due_at": due})
 
@@ -476,7 +486,7 @@ class Default(WorkerEntrypoint):
             limit = min(100, max(1, int(query.get("limit") or 50)))
             await _migrate(self.env, user)
             contact = await _contact(self.env, unit) or {}
-            await self._kick_due(self.env, user, unit, contact)
+            await self._kick_due(self.env, user, unit)
             now = convo.now_ms()
             tz = int((await convo.prefs(self.env, user))["tz_offset"])
             conv = await convo.load(self.env, user, unit, now)
@@ -484,12 +494,13 @@ class Default(WorkerEntrypoint):
             rows = await convo.tail(self.env, user, unit, after, limit)
             cursor = int(rows[-1]["id"]) if rows else after
             typing = bool(conv["turn_id"] and int(conv["turn_expires_at"] or 0) > now)
+            nxt = await convo.pending_due(self.env, user, unit)
             return Response.json({
                 "unit": unit,
                 "status": st,
                 "typing": typing,
                 "wake_at": convo.wake_at(contact, now, tz) if st == "offline" else 0,
-                "reply_due_at": conv["reply_due_at"],
+                "reply_due_at": int(nxt["due_at"]) if nxt else None,
                 "cursor": cursor,
                 "seen": int(conv["user_seen_seq"] or 0),
                 "messages": rows,
@@ -709,46 +720,159 @@ class Default(WorkerEntrypoint):
 
         return Response.json({"error": "用 POST"}, status=405)
 
-    # ── scheduler ────────────────────────────────────────────────────────
+    # ── scheduler: every cron runs the same idempotent drain ────────────
     async def scheduled(self, controller, *rest):
-        env = self.env
-        now = convo.now_ms()
-        if getattr(controller, "cron", "") == "* * * * *":
-            await self._due_sweep(env, now)
-            await self._push_sweep(env)
-        else:
-            await self._heavy_sweep(env, now / 1000.0)
+        await self.drain(self.env)
 
-    async def _kick_due(self, env, user: str, unit: str, contact: dict) -> None:
+    async def drain(self, env) -> None:
+        bind_worker_env(env)
+        auth.bind_r2(env)
         now = convo.now_ms()
-        conv = await convo.load(env, user, unit, now)
-        if conv["reply_due_at"] is None or int(conv["reply_due_at"]) > now:
+        try:
+            await self._reconcile_once(env, now)
+        except Exception as e:
+            print(f"[drain] reconcile failed: {type(e).__name__}: {str(e)[:120]}")
+        try:
+            await convo.recover(env, now)
+        except Exception as e:
+            print(f"[drain] recover failed: {type(e).__name__}: {str(e)[:120]}")
+        try:
+            await self._ensure_recurring(env, now)
+        except Exception as e:
+            print(f"[drain] ensure failed: {type(e).__name__}: {str(e)[:120]}")
+        try:
+            for job in await convo.claim_jobs(env, now, limit=3):
+                await self._run_job(env, job)
+        except Exception as e:
+            print(f"[drain] jobs failed: {type(e).__name__}: {str(e)[:120]}")
+        try:
+            await self._push_sweep(env)
+        except Exception as e:
+            print(f"[drain] push failed: {type(e).__name__}: {str(e)[:120]}")
+        try:
+            await convo.heartbeat(env, now)
+        except Exception as e:
+            print(f"[drain] health failed: {type(e).__name__}: {str(e)[:120]}")
+
+    async def _reconcile_once(self, env, now: int) -> None:
+        if await convo.jobs_migrated(env):
             return
-        if conv["turn_id"] and int(conv["turn_expires_at"] or 0) > now:
+        await convo.reconcile(env, now)
+        await convo.mark_jobs_migrated(env, now)
+        print("[drain] reconciled legacy turns -> jobs")
+
+    async def _ensure_recurring(self, env, now: int) -> None:
+        # Watchdog: revive missing/done/dead recurring jobs. Runs every ~10 min,
+        # rotating HEAVY_USERS_PER_TICK users to stay under the subrequest budget.
+        if not await convo.ensure_due(env, now):
             return
-        tz = int((await convo.prefs(env, user))["tz_offset"])
-        if convo.status(contact, conv, user, unit, now, tz) == "offline":
-            task = run_in_background(convo.defer_to_wake(
-                env, user, unit, contact, now, tz, conv["turn_kind"]))
-        else:
-            task = run_in_background(self._run_turn(env, user, unit, contact))
+        await convo.mark_ensured(env, now)
+        users = list(await _load_users(env))
+        if users:
+            k = int(now // convo.ENSURE_MS) % len(users)
+            users = (users[k:] + users[:k])[:HEAVY_USERS_PER_TICK]
+        contacts = {}
+        for unit in sorted(PERSONAS):
+            contacts[unit] = await _contact(env, unit) or {}
+        for user in users:
+            try:
+                tz = int((await convo.prefs(env, user))["tz_offset"])
+                for unit in sorted(PERSONAS):
+                    if isinstance(contacts[unit].get("proactive"), dict):
+                        await convo.ensure_job(env, user, unit, "proactive_tick",
+                                               f"ptick:{user}:{unit}",
+                                               now + convo.TICK_MS, now)
+                    await convo.ensure_job(env, user, unit, "life_day",
+                                           f"lifeday:{user}:{unit}",
+                                           life.next_midnight_ms(now, tz) + 60_000, now)
+            except Exception as e:
+                print(f"[drain] ensure {user} failed: {type(e).__name__}: {str(e)[:120]}")
+
+    async def _kick_due(self, env, user: str, unit: str) -> None:
+        now = convo.now_ms()
+        job = await convo.due_job(env, user, unit, now)
+        if not job:
+            return
+        job = await convo.claim_job(env, job["id"], now)
+        if not job:
+            return
+        task = run_in_background(self._run_job(env, job))
         wait_until(task)
 
-    async def _run_turn(self, env, user: str, unit: str, contact: dict) -> None:
+    async def _run_job(self, env, job: dict) -> None:
+        try:
+            kind = job["kind"]
+            if kind == "proactive_tick":
+                await self._proactive_job(env, job)
+            elif kind == "life_day":
+                await self._life_job(env, job)
+            else:
+                await self._run_turn_job(env, job)
+        except Exception as e:
+            now = convo.now_ms()
+            print(f"[job] {job.get('kind')} {job.get('user')}/{job.get('unit')} crashed: "
+                  f"{type(e).__name__}: {str(e)[:160]}")
+            await convo.retry(env, job, now, f"{type(e).__name__}: {str(e)[:160]}")
+
+    async def _ctx(self, env, user: str, unit: str):
+        contact = await _contact(env, unit)
+        tz = int((await convo.prefs(env, user))["tz_offset"])
+        return contact, tz
+
+    async def _proactive_job(self, env, job: dict) -> None:
         now = convo.now_ms()
-        turn, row = await convo.claim(env, user, unit, now)
+        user, unit = job["user"], job["unit"]
+        contact, tz = await self._ctx(env, user, unit)
+        if not contact:
+            await convo.retry(env, job, now, "contact missing")
+            return
+        nxt = await convo.proactive_tick(env, user, unit, contact, now, tz)
+        await convo.reschedule(env, job["id"], nxt, now)
+
+    async def _life_job(self, env, job: dict) -> None:
+        now = convo.now_ms()
+        user, unit = job["user"], job["unit"]
+        contact, tz = await self._ctx(env, user, unit)
+        if contact:
+            try:
+                lif = await life.load(env, user, unit)
+                if life.needs_day(lif, now, tz):
+                    lif = life.mark_attempt(life.settle(lif, contact, now, tz), now)
+                    await life.save(env, user, unit, lif)
+                    hist = _rows_to_hist(await convo.recent(env, user, unit, 12))
+                    out = await run_chain(life.day_messages(
+                        unit, contact, lif, sanitize_history(hist), now))
+                    day = life.parse_day(out.get("content") or "")
+                    await life.save(env, user, unit,
+                                    life.apply_day(lif, day, life.day_stamp(now, tz), now))
+                    print(f"[life] {user}/{unit} day rolled events={len(day['events'])}")
+            except Exception as e:
+                print(f"[life] {user}/{unit} day failed: {type(e).__name__}: {str(e)[:120]}")
+                await convo.retry(env, job, now, f"{type(e).__name__}: {str(e)[:120]}")
+                return
+        nxt = life.next_midnight_ms(now, tz) + int(random.random() * 30 * 60_000)
+        await convo.reschedule(env, job["id"], nxt, now)
+
+    async def _run_turn_job(self, env, job: dict) -> None:
+        now = convo.now_ms()
+        user, unit, kind = job["user"], job["unit"], job["kind"]
+        contact, tz = await self._ctx(env, user, unit)
+        if not contact:
+            await convo.retry(env, job, now, "contact missing")
+            return
+        conv = await convo.load(env, user, unit, now)
+        if convo.status(contact, conv, user, unit, now, tz) == "offline":
+            due = convo.wake_at(contact, now, tz) + (convo.reply_delay(contact, "active") or 5000)
+            await convo.defer(env, job, due, now)
+            return
+        turn = await convo.claim_turn(env, user, unit, now)
         if not turn:
+            await convo.defer(env, job, now + 2000, now)
             return
         try:
-            tz = int((await convo.prefs(env, user))["tz_offset"])
-            conv = await convo.load(env, user, unit, now)
-            if convo.status(contact, conv, user, unit, now, tz) == "offline":
-                await convo.defer_to_wake(env, user, unit, contact, now, tz, row["turn_kind"])
-                return
             hist = _rows_to_hist(await convo.recent(env, user, unit, 30))
             lif = life.settle(await life.load(env, user, unit), contact, now, tz)
             msgs = to_messages(unit, hist, tz, lif, contact)
-            kind = row["turn_kind"] or "reply"
             if kind == "proactive":
                 msgs.append({"role": "user", "content": PRO_REQ})
             elif kind == "burst":
@@ -759,27 +883,52 @@ class Default(WorkerEntrypoint):
                 raise RuntimeError("empty reply")
             done = convo.now_ms()
             glow = int((contact.get("glow") or 15) * 60_000)
-            if not await convo.complete(env, user, unit, turn, parts, done, glow):
+            ok = await convo.complete(env, user, unit, turn, parts, done, glow,
+                                      job["id"], proactive=(kind == "proactive"))
+            if not ok:
                 print(f"[turn] {user}/{unit} superseded, discard")
                 return
             await life.save(env, user, unit,
                             life.apply_chat(lif, parse_chat(out.get("content") or ""), done))
             if kind == "reply":
-                await convo.maybe_burst(env, user, unit, contact, done)
+                await self._maybe_burst(env, user, unit, contact, job, done)
+            elif kind == "burst":
+                await self._maybe_burst(env, user, unit, contact, job, done, follow=True)
             await self._push_unit(env, user, unit)
             print(f"[turn] {user}/{unit} kind={kind} bubbles={len(parts)}")
         except Exception as e:
+            await convo.release_turn(env, user, unit, turn, now)
             print(f"[turn] {user}/{unit} failed: {type(e).__name__}: {str(e)[:160]}")
-            await convo.fail(env, user, unit, turn, now + 60_000, now)
+            await convo.retry(env, job, now, f"{type(e).__name__}: {str(e)[:160]}")
 
-    async def _due_sweep(self, env, now: int) -> None:
-        for user, unit in await convo.due(env, now, limit=4):
-            contact = await _contact(env, unit)
-            if contact:
-                await self._run_turn(env, user, unit, contact)
+    async def _maybe_burst(self, env, user, unit, contact, job, now, follow=False):
+        chance, cap = contact.get("burst") or [0, 0]
+        try:
+            cap = int(cap)
+        except (TypeError, ValueError):
+            cap = 0
+        if cap <= 0:
+            return
+        parent = job["dedupe_key"]
+        n = 1
+        if follow:
+            try:
+                payload = json.loads(job.get("payload") or "{}")
+            except Exception:
+                payload = {}
+            n = int(payload.get("n") or 1) + 1
+            parent = payload.get("parent") or parent
+            if n > cap:
+                return
+        if random.random() >= float(chance or 0):
+            return
+        await convo.enqueue(env, user, unit, "burst",
+                            now + 2000 + int(random.random() * 6000),
+                            f"burst:{user}:{unit}:{parent}:{n}",
+                            {"n": n, "parent": parent}, now)
 
     async def _push_sweep(self, env) -> None:
-        for user in await convo.users_with_unpushed(env, 20):
+        for user in await convo.users_with_unpushed(env, 5):
             await self._push_user(env, user)
 
     async def _push_user(self, env, user: str) -> None:
@@ -795,6 +944,7 @@ class Default(WorkerEntrypoint):
         conv = await convo.load(env, user, unit, now)
         nxt = await convo.next_push(env, user, unit, int(conv["user_seen_seq"] or 0))
         if not nxt:
+            await convo.mark_pushed(env, user, unit, now)  # nothing new to notify
             return
         if await convo.visible_devices(env, user, now):
             return  # in the app; /away will retry
@@ -826,45 +976,6 @@ class Default(WorkerEntrypoint):
             await _save_subs(env, user, keep)
         print(f"[push] {user}/{unit} targets={[(s.get('d') or '-', c) for s, c in zip(subs, codes)]}")
         if codes and all(c == 0 or c >= 500 for c in codes) and keep:
+            await convo.bump_push_attempts(env, user, unit, now)
             return  # transient failure: retry next tick
         await convo.mark_pushed(env, user, unit, now)
-
-    async def _heavy_sweep(self, env, now: float) -> None:
-        users = list(await _load_users(env))
-        if users:
-            k = int(now // 300) % len(users)
-            users = (users[k:] + users[:k])[:HEAVY_USERS_PER_TICK]
-        for user in users:
-            await self._life_sweep(env, user, now)
-            await self._proactive_sweep(env, user, int(now * 1000))
-
-    async def _proactive_sweep(self, env, user: str, now: int) -> None:
-        tz = int((await convo.prefs(env, user))["tz_offset"])
-        for unit in sorted(PERSONAS):
-            contact = await _contact(env, unit)
-            if not contact:
-                continue
-            if await convo.proactive(env, user, unit, contact, now, tz):
-                await self._run_turn(env, user, unit, contact)
-
-    async def _life_sweep(self, env, user: str, now: float) -> None:
-        now_ms = now * 1000.0
-        for unit in sorted(PERSONAS):
-            try:
-                lif = await life.load(env, user, unit)
-                if not life.needs_day(lif, now_ms):
-                    continue
-                contact = await _contact(env, unit)
-                if not contact:
-                    continue
-                lif = life.mark_attempt(life.settle(lif, contact, now_ms), now_ms)
-                await life.save(env, user, unit, lif)
-                hist = _rows_to_hist(await convo.recent(env, user, unit, 12))
-                out = await run_chain(life.day_messages(
-                    unit, contact, lif, sanitize_history(hist), now_ms))
-                day = life.parse_day(out.get("content") or "")
-                await life.save(env, user, unit,
-                                life.apply_day(lif, day, life.day_stamp(now_ms), now_ms))
-                print(f"[life] {user}/{unit} day rolled events={len(day['events'])}")
-            except Exception as e:
-                print(f"[life] {user}/{unit} day failed: {type(e).__name__}: {str(e)[:120]}")

@@ -389,3 +389,14 @@ npx wrangler deploy                  # 改了 site/ 必须部署，workers.dev �
 - 迁移：首次 `/conversations`、`/conversation`、`/messages` 任一调用触发 `_migrate`，把 R2 `{user}/hist/*.json` + `state.json.notified` 一次性导入 D1（按 t 排、按 notified 还原未读、标记 `prefs.migrated`）。
 - 线上落地：本地 `wrangler dev --local` 已实测注册/发送/轮询/生成/burst/已读/ping/away/transcript/reset/迁移标记；`py_compile`、`node --check`、`tools/smoke.mjs` 全 PASS。
 - 待手工：当前 API token 没有 D1 权限，需先 `wrangler login` 或用带 D1 Edit 的 token 执行 `wrangler d1 create fluentchat`，把 database_id 填进 `wrangler.jsonc`，再 `wrangler d1 execute fluentchat --remote --file schema.sql`；之后 `wrangler deploy`。
+
+## 消息链 v4：D1 作业队列 + 单一 drain（2026-11-10）
+
+- 事故：11-08 起 NPC 主动消息一条都不发。根因不是随机，而是 D1 重写（2999e2b）把 `scheduled` 里的 `bind_worker_env` 删了——cron 生成时 `env_key` 全空，`run_chain` 直接「所有模型均不可用」。于是 11-09 23:30/23:55 Leo/Chole 抽中后生成失败，`fail()` 留下 `reply_due_at` 重试戳；而旧 `proactive()` 把「`reply_due_at` 非空」当忙，重试又没人清，永久哑火。离线回复、生活日、推送同因一起坏（77 条未推）。
+- 结构：新增 D1 `jobs`（reply|burst|proactive|proactive_tick|life_day）作为唯一调度真源，`pending -> leased -> done|dead`，`lease_until` 过期由 `recover()` 拉回；`cron_health` 记 drain 心跳/死信数，`/health` 暴露 `drain_age_ms` 与 jobs 计数。
+- 调度：`scheduled` 不再读 `controller.cron`，两条 cron 都跑同一个幂等 `drain()`：reconcile(一次) → recover → ensure recurring(每 10 分钟轮 3 用户) → claim(≤3) → push → heartbeat。分支脆弱点删除，两条触发器互为冗余。
+- 主动：`proactive_tick` 是自续期作业（5 分钟），命中才入队 `proactive`；额度改成**成功才计**——在飞 proactive 作业数即预留，失败/死亡自动退额，不再「抽中即扣」。
+- 发送：job 执行先抢会话租约（`turn_id`），生成成功在同一 D1 batch 里插消息 + 清租约 + 标 job done + 主动 `sent+1`；失败按指数退避重试，超限置 dead 并清租约，绝不堵后续。`/messages` 只入队 reply；`/conversation` 轮询顺带 kick 本会话到期 job（低延迟，正确性仍靠 drain）。
+- 迁移：首次 drain 用 `cron_health.jobs_migrated` 守卫，清掉所有存量 `reply_due_at/turn_id` 孤儿，给最后一条未回用户消息补 reply job；存量主动由 tick 重新抽（成功才计，无需补偿）。旧列保留只读。
+- 关键修复：`drain()` 开头补 `bind_worker_env(env)` + `auth.bind_r2(env)`（fetch 一直有，cron 丢了）。
+- 线上验证：schema 已 apply；部署后 reconcile 清掉 riceball 卡死回合，tick 把 proactive_date 复位到 11-10；selftest job 第 3 次重试生成成功（证明 cron 侧 key 已恢复）；riceball/Leo 真实抽中并生成 2 条主动消息、`proactive_sent=1`、job=done；77 条历史未推全部清账；dead=0。`py_compile`/`test_convo`/`smoke` 全 PASS。
