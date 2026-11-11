@@ -525,6 +525,21 @@ async def proactive_tick(env, user: str, unit: str, contact: dict,
     last = await last_text(env, user, unit)
     if last and last["role"] == "me":
         return now + TICK_MS
+    span = await _first(env,
+        "SELECT COALESCE(MAX(CASE WHEN role='me' THEN t END),0) AS user_t, "
+        "MIN(CASE WHEN role='ai' THEN t END) AS ai_t FROM messages "
+        "WHERE user=? AND unit=? AND kind='text'", user, unit)
+    user_t = int(span["user_t"] or 0)
+    anchor = user_t or int(span["ai_t"] or 0)
+    if anchor and now - anchor >= 21 * 86_400_000:
+        return now + TICK_MS
+    unans = int((await _first(env,
+        "SELECT COUNT(*) AS n FROM jobs WHERE user=? AND unit=? AND kind='proactive' "
+        "AND state='done' AND updated_at>?", user, unit, user_t))["n"])
+    last_ai = await last_ai_t(env, user, unit)
+    seed = int(conv["proactive_last_at"] or 0) or 1
+    if last_ai and now - last_ai < cloud_npc.proactive_gap_ms(unans, seed):
+        return now + TICK_MS
     busy = await _first(env,
         "SELECT 1 AS x FROM jobs WHERE user=? AND unit=? AND kind IN ('reply','burst') "
         "AND state IN ('pending','leased') LIMIT 1", user, unit)
@@ -538,7 +553,8 @@ async def proactive_tick(env, user: str, unit: str, contact: dict,
                                 engine, now / 1000, slot_minutes=5):
         seq = sent + inflight + 1
         await enqueue(env, user, unit, "proactive", now,
-                      f"proactive:{user}:{unit}:{date}:{seq}", {"seq": seq}, now)
+                      f"proactive:{user}:{unit}:{date}:{seq}",
+                      {"seq": seq, "unans": unans}, now)
     return now + TICK_MS
 
 
@@ -608,9 +624,7 @@ async def bump_engagement(env, user: str, unit: str, now: int, warm: bool) -> No
 
 async def reset(env, user: str, unit: str, now: int) -> None:
     await env.DB.prepare("DELETE FROM messages WHERE user=? AND unit=?").bind(user, unit).run()
-    await env.DB.prepare(
-        "DELETE FROM jobs WHERE user=? AND unit=? AND state IN ('pending','leased')"
-    ).bind(user, unit).run()
+    await env.DB.prepare("DELETE FROM jobs WHERE user=? AND unit=?").bind(user, unit).run()
     await env.DB.prepare(
         "UPDATE conversations SET npc_read_seq=0, user_seen_seq=0, reply_due_at=NULL, "
         "turn_id=NULL, turn_expires_at=0, turn_kind=NULL, glow_until=0, burst_left=0, "

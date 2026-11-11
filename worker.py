@@ -125,6 +125,13 @@ PRO_REQ = (
     "short sentences at most; a polished paragraph is not how friends text. "
     "Not a meta-greeting, don't mention that you haven't heard from me.)"
 )
+PRO_REQ_LOW = (
+    "(Quiet reach-out. I didn't answer your last text, so do not ask for a reply, "
+    "do not mention the silence, and do not explain why you're texting. Share one "
+    "small true thing from your day or a memory of us that just surfaced, in one "
+    "short line. Let it stand on its own: no question, no 'you there', no guilt. "
+    "One text bubble only.)"
+)
 BURST_REQ = (
     "(Follow-up turn: you just texted and, like a real friend, you want to add one "
     "quick thing. 1-2 short casual lines. Don't start a big new topic.)"
@@ -874,13 +881,20 @@ class Default(WorkerEntrypoint):
             lif = life.settle(await life.load(env, user, unit), contact, now, tz)
             msgs = to_messages(unit, hist, tz, lif, contact)
             if kind == "proactive":
-                msgs.append({"role": "user", "content": PRO_REQ})
+                try:
+                    unans = int(json.loads(job.get("payload") or "{}").get("unans") or 0)
+                except Exception:
+                    unans = 0
+                msgs.append({"role": "user",
+                             "content": PRO_REQ_LOW if unans >= 1 else PRO_REQ})
             elif kind == "burst":
                 msgs.append({"role": "user", "content": BURST_REQ})
             out = await run_chain(msgs)
             parts = split_reply(unit, out.get("content") or "")
             if not parts:
                 raise RuntimeError("empty reply")
+            if kind == "proactive" and len(parts) > 1:
+                parts = [" ".join(parts)]
             done = convo.now_ms()
             glow = int((contact.get("glow") or 15) * 60_000)
             ok = await convo.complete(env, user, unit, turn, parts, done, glow,

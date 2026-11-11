@@ -37,6 +37,17 @@ def minutes_left_cst(windows, now: float) -> int:
     return total
 
 
+def proactive_gap_ms(unanswered: int, seed: int) -> int:
+    """Min gap before the next proactive send, jittered once per interval.
+
+    Tiers: 0 -> 2-4h, 1 -> 4-7d, 2+ -> 5-9d. Seeding by the previous send
+    time keeps repeated ticks from drifting toward the tier's low end."""
+    tiers = ((2, 4), (96, 168), (120, 216))
+    lo, hi = tiers[0] if unanswered <= 0 else tiers[1] if unanswered == 1 else tiers[2]
+    r = ((seed * 2654435761) & 0xFFFFFFFF) / 4294967296
+    return int((lo + (hi - lo) * r) * 3600_000)
+
+
 def pick_proactive(contact: dict, led: dict, eng: float, now: float,
                    force: bool = False, slot_minutes: int = 5) -> bool:
     """这一 tick 该不该开口。led 为该 persona 云册账本（缺= {"date", "sent"}），
