@@ -93,7 +93,7 @@ export function initCalls({ show, back }) {
 
   const preview = (rec) => {
     if (rec.review?.overall) return rec.review.overall;
-    if (state.get(rec.id) === "loading") return "正在生成点评…";
+    if (state.get(rec.id) === "loading") return "Writing your review…";
     if (state.get(rec.id) === "error") return "点评生成失败 — 点开可重试";
     if (!(rec.turns || []).some((t) => t.who === "me")) return "No spoken lines";
     return "No review yet";
@@ -164,6 +164,19 @@ export function initCalls({ show, back }) {
     bodyEl.replaceChildren();
 
     const hasMe = (rec.turns || []).some((t) => t.who === "me");
+    const st = state.get(rec.id);
+    if (hasMe && !rec.review && st === "loading") {
+      const pending = document.createElement("div");
+      pending.className = "review review--pending";
+      const label = document.createElement("p");
+      label.className = "review__label";
+      label.textContent = "Review in progress";
+      const text = document.createElement("p");
+      text.className = "review__text";
+      text.textContent = "Fiona is writing your review…";
+      pending.append(label, text);
+      bodyEl.append(pending);
+    }
     if (rec.review) {
       const legend = document.createElement("p");
       legend.className = "call-legend";
@@ -200,16 +213,14 @@ export function initCalls({ show, back }) {
         if (sec) card.append(sec);
       }
       bodyEl.append(card);
-    } else {
-      const st = state.get(rec.id);
+    } else if (st !== "loading") {
       const note = document.createElement("p");
       note.className = "call-note";
       note.textContent = !hasMe ? "这次通话没有你的发言，所以没有点评。"
-        : st === "loading" ? "正在生成点评…"
         : st === "error" ? "点评生成失败。"
         : "这次通话还没有点评。";
       bodyEl.append(note);
-      if (hasMe && st !== "loading") {
+      if (hasMe) {
         const btn = document.createElement("button");
         btn.type = "button";
         btn.className = "call-retry";

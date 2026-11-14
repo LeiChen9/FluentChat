@@ -166,7 +166,7 @@ globalThis.fetch = async (url, opts) => {
         phrases: ["I work on…", "My day is mostly…", "I'm responsible for…"] },
     ],
   });
-  if (u === "/call-review") return json({ overall: "ok", good: [], improve: [], focus: [], lines: [] });
+  if (u === "/call-review") return new Promise(() => {});
   return json({});
 };
 const store = new Map();
@@ -265,13 +265,24 @@ console.log("✓ 详情页发起课堂通话，不打开 Fiona 聊天");
 
 lastWs.onopen?.();
 lastWs.onmessage?.({ data: JSON.stringify({ setupComplete: {} }) });
+lastWs.onmessage?.({ data: JSON.stringify({
+  serverContent: { inputTranscription: { text: "hello" }, turnComplete: true },
+}) });
 await tick(10);
 els.get("call-end").fire("click");
 await tick(30);
 if (els.get("view-call").hidden) throw new Error("class call did not land on Calls detail");
 const transcript = calls.find((c) => c.url === "/transcript" && c.body?.practice);
 if (!transcript || transcript.body.unit !== "persona-Fiona") throw new Error("class transcript missing");
-console.log("✓ 课堂通话结束落在 Calls 点评页，转写标记 practice");
+const pending = els.get("call-detail-body").children[0];
+if (!pending || !String(pending.className).includes("review--pending")) {
+  throw new Error("pending review is not the first block");
+}
+if (pending.children[0]?.textContent !== "Review in progress"
+  || pending.children[1]?.textContent !== "Fiona is writing your review…") {
+  throw new Error("pending review copy missing");
+}
+console.log("✓ 课堂通话结束落在 Calls 点评页，点评加载卡在最上方");
 
 els.get("call-back").fire("click");
 await tick(20);

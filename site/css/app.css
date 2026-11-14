@@ -702,6 +702,7 @@ button { font: inherit; color: inherit; }
   .view.is-active,
   .msg,
   .review,
+  .review--pending .review__text::after,
   .call__end,
   .tab[aria-selected="true"] svg {
     animation: none !important;
@@ -1209,6 +1210,30 @@ button { font: inherit; color: inherit; }
   font-size: 12px;
   color: var(--ink-3);
   text-align: center;
+}
+
+/* 点评生成中：放在转录上方，先用高亮卡片占住视线 */
+.review--pending {
+  margin: 4px 0 10px;
+  border-color: rgba(138, 90, 18, 0.28);
+  background: linear-gradient(135deg, rgba(138, 90, 18, 0.10), rgba(126, 168, 116, 0.18));
+  box-shadow: inset 3px 0 0 #8a5a12, 0 8px 24px rgba(138, 90, 18, 0.10);
+}
+.review--pending .review__label { color: #8a5a12; }
+.review--pending .review__text { font-weight: 600; }
+.review--pending .review__text::after {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-left: 7px;
+  border-radius: 50%;
+  background: #8a5a12;
+  vertical-align: 1px;
+  animation: pendingPulse 1s ease-in-out infinite;
+}
+@keyframes pendingPulse {
+  50% { opacity: .25; transform: scale(.7); }
 }
 /* Chat 里的通话记录行：微信式居中系统行，点开详情 */
 .msg--call {
