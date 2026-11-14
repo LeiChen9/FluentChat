@@ -1,6 +1,6 @@
 // 冒烟测试：不依赖浏览器，用 DOM / AudioContext / WebSocket 的桩跑通新消息链：
 // 列表从 /conversations 渲染 → 进聊天拉 /conversation → 发消息 POST /messages
-// → 轮询拿到 AI 消息 → POST /seen → offline 状态不 typing → reset → 练习卡。
+// → 轮询拿到 AI 消息 → POST /seen → offline 状态不 typing → reset → Fiona's Class。
 // 跑法：node tools/smoke.mjs （最后一行打印 SMOKE PASS 即通过）
 const els = new Map();
 function match(el, sel) {
@@ -60,13 +60,12 @@ for (const i of ["chat-list","contact-list","moment-list","chat-name","chat-stat
   "call","call-av","call-name","call-state","call-said","call-end",
   "call-back","call-list","call-detail-name","call-detail-meta","call-detail-body",
   "auth","auth-form","auth-user","auth-pass","auth-err","auth-reg",
-  "view-chats","view-practice","view-calls","view-moments","view-me","view-chat","view-call",
-  "practice-list",
+  "view-chats","view-class","view-calls","view-moments","view-me","view-chat","view-call",
+  "class-body","class-back",
   "push-enable","push-note","push-err","profile-err","profile-row","me-avatar",
   "me-user","avatar-file","logout-row","notif-sheet","notif-sheet-close"]) els.set(i, mkEl(i));
 const tabs = [
   Object.assign(mkEl("", "button"), { dataset: { view: "chats" } }),
-  Object.assign(mkEl("", "button"), { dataset: { view: "practice" } }),
   Object.assign(mkEl("", "button"), { dataset: { view: "calls" } }),
   Object.assign(mkEl("", "button"), { dataset: { view: "moments" } }),
   Object.assign(mkEl("", "button"), { dataset: { view: "me" } }),
@@ -157,10 +156,13 @@ globalThis.fetch = async (url, opts) => {
     return json({ id: 100, t: now, status: leoStatus, wake_at: 0, reply_due_at: now + 4000 });
   }
   if (u === "/token") return json({ token: "tok", model: "m" });
-  if (u === "/practice/plan") return json({ units: [
-    { id: "unit-01", chapter: "survival", title: "Meet Me", can_do: "认识一个新朋友" },
-    { id: "unit-07", chapter: "expression", title: "At Work", can_do: "聊工作日常" },
-  ] });
+  if (u === "/practice/plan") return json({
+    intro: "I'm an English teacher. Pick a topic and we'll talk for five minutes.",
+    units: [
+      { id: "unit-01", chapter: "survival", title: "Meet Me", can_do: "Say hello." },
+      { id: "unit-07", chapter: "expression", title: "At Work", can_do: "What you do." },
+    ],
+  });
   if (u === "/call-review") return json({ overall: "ok", good: [], improve: [], focus: [], lines: [] });
   return json({});
 };
@@ -175,9 +177,11 @@ const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
 await import(new URL("../site/js/app.js", import.meta.url).href);
 await tick(30);
 const chatList = els.get("chat-list");
-if (chatList.children.length !== 4) throw new Error(`chat rows: ${chatList.children.length}`);
+if (chatList.children.length !== 5) throw new Error(`chat rows: ${chatList.children.length}`);
+const classRow = chatList.children.find((li) => String(li.children[0]?.className).includes("row--class"));
+if (!classRow) throw new Error("Fiona's Class row missing");
 if (!calls.some((c) => c.url === "/ping")) throw new Error("boot did not ping presence");
-console.log("✓ 列表渲染 4 行，boot 已 ping");
+console.log("✓ 列表渲染 5 行（含 Fiona's Class），boot 已 ping");
 
 const body = els.get("chat-body");
 chatList.children[0].children[0].fire("click");
@@ -212,16 +216,25 @@ await tick(20);
 if (!calls.some((c) => c.url === "/reset")) throw new Error("reset not posted");
 console.log("✓ reset 清服务端时间线");
 
-tabs[1].fire("click");
+classRow.children[0].fire("click");
 await tick(20);
-const practiceRows = els.get("practice-list").children
-  .flatMap((c) => c.children || [])
-  .filter((c) => String(c.className).includes("practice-row"));
-if (practiceRows.length !== 2) throw new Error(`practice rows: ${practiceRows.length}`);
-practiceRows[0].fire("click");
+if (els.get("view-class").hidden) throw new Error("class row did not open class");
+if (!els.get("class-body").querySelectorAll(".class-intro").length) throw new Error("class intro missing");
+const topicRows = els.get("class-body").querySelectorAll(".class-topic");
+if (topicRows.length !== 2) throw new Error(`class topics: ${topicRows.length}`);
+console.log("✓ Fiona's Class 行打开课堂，介绍与主题已渲染");
+
+els.get("class-back").fire("click");
 await tick(20);
-const practiceToken = calls.find((c) => c.url === "/token" && c.body?.practice);
-if (!practiceToken || practiceToken.body.unit !== "unit-01") throw new Error("practice token missing");
-console.log("✓ 练习卡仍能拨打");
+if (!els.get("view-class").hidden) throw new Error("class back did not close class");
+console.log("✓ 课堂返回 Chats");
+
+classRow.children[0].fire("click");
+await tick(20);
+topicRows[0].fire("click");
+await tick(20);
+const classToken = calls.find((c) => c.url === "/token" && c.body?.practice);
+if (!classToken || classToken.body.unit !== "unit-01") throw new Error("class token missing");
+console.log("✓ 主题卡仍能发起课堂通话");
 console.log("SMOKE PASS");
 process.exit(0);

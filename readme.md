@@ -70,10 +70,10 @@
 | 11 | The Reason | 说清工作决定的原因 |
 | 12 | What to Improve | 聊哪里不足、怎么提升 |
 
-## Practice 练习房间
+## Fiona's Class 服务号
 
-底部 `Practice` tab 由 Fiona 主持，把 12 个 Unit 当作 5 分钟场景卡；点卡片直接发起练习通话，挂断后生成通话点评。Chats 里的朋友仍然不教学，训练只发生在练习房间。
+Chats 里的 `Fiona's Class` 是 Fiona 自己运营的服务号，不是第五个 tab。它和聊天行一样按最近活动排序；点进去后置为最新，浮到列表上方，但没有未读、预览或主动消息。课堂页是 Fiona 第一人称的短介绍 + 12 个主题；点主题直接发起 5 分钟课堂通话，挂断后生成通话点评。Chats 里的朋友仍然不教学，训练只发生在课堂里。
 
 ## Prompt 目录
 
-`prompts/` 按 chapter 分目录：`base.md` 是 Ch1 通用规则，`base-ch2.md` 是 Ch2 表达篇通用规则（流利优先、A2-B1、鼓励完整句），`practice_room.md` 是 Fiona 练习房间的教师规则覆盖层，`ch1-survival/`、`ch2-expression/` 各放本阶段的单元 prompt。`worker.py` 按单元号选对应 base，`tools/gen_prompts.py` 递归收集全部 md 并注入 `worker.py`。
+`prompts/` 按 chapter 分目录：`base.md` 是 Ch1 通用规则，`base-ch2.md` 是 Ch2 表达篇通用规则（流利优先、A2-B1、鼓励完整句），`fiona_class.md` 是 Fiona 课堂的教师规则覆盖层，`ch1-survival/`、`ch2-expression/` 各放本阶段的单元 prompt。`worker.py` 按单元号选对应 base，`tools/gen_prompts.py` 递归收集全部 md 并注入 `worker.py`。

@@ -1,16 +1,22 @@
-"""Practice tab 的场景元数据：单一真源，供 /practice/plan 读取。"""
+"""Fiona's Class 的主题元数据：单一真源，供 /practice/plan 读取。"""
+
+CLASS_INTRO = (
+    "I'm an English teacher. This is a small room I keep for friends who want "
+    "to practise. One topic at a time, about five minutes. Pick whatever sounds "
+    "like your week."
+)
 
 UNIT_META = {
-    "unit-01": ("survival", "Meet Me", "认识一个新朋友"),
-    "unit-02": ("survival", "My Day", "聊今天做了什么"),
-    "unit-03": ("survival", "Food & Coffee", "聊喜欢吃什么、喝什么"),
-    "unit-04": ("survival", "Weekend", "聊周末计划"),
-    "unit-05": ("survival", "My Home", "聊住在哪里、家里有什么"),
-    "unit-06": ("survival", "Free Time", "聊兴趣、电影、音乐、游戏等"),
-    "unit-07": ("expression", "At Work", "聊工作日常"),
-    "unit-08": ("expression", "Recent Experience", "聊最近的一段工作经历"),
-    "unit-09": ("expression", "How It's Done", "解释具体工作做法（带专业细节）"),
-    "unit-10": ("expression", "Describe It", "描述工位 / 常用工具"),
-    "unit-11": ("expression", "The Reason", "说清工作决定的原因"),
-    "unit-12": ("expression", "What to Improve", "聊哪里不足、怎么提升"),
+    "unit-01": ("survival", "Meet Me", "Say hello and share a little about yourself."),
+    "unit-02": ("survival", "My Day", "Tell me what today looked like."),
+    "unit-03": ("survival", "Food & Coffee", "What you like to eat and drink."),
+    "unit-04": ("survival", "Weekend", "Plans, invitations, and a little maybe."),
+    "unit-05": ("survival", "My Home", "Where you live and what makes it yours."),
+    "unit-06": ("survival", "Free Time", "What you reach for when the day is yours."),
+    "unit-07": ("expression", "At Work", "What you do, in plain words."),
+    "unit-08": ("expression", "Recent Experience", "Tell the story of a project, start to finish."),
+    "unit-09": ("expression", "How It's Done", "Explain a process step by step."),
+    "unit-10": ("expression", "Describe It", "Describe a tool or place you use every day."),
+    "unit-11": ("expression", "The Reason", "Say why you made a choice."),
+    "unit-12": ("expression", "What to Improve", "Talk about one thing you'd do better."),
 }

@@ -1,12 +1,12 @@
-import { initChat, fmtRowTime } from "./live.js?v=20261109-1";
+import { initChat, fmtRowTime } from "./live.js?v=20261114-2";
 import { loadContacts } from "./personas.js?v=20261108-1";
 import { initCalls } from "./calls.js?v=20261025-1";
-import { initPractice } from "./practice.js?v=20261103-2";
-// 五个主 tab + 两个子页（聊天 / 通话详情）。
-const VIEWS = ["chats", "practice", "calls", "moments", "me", "chat", "call"];
+import { initClass } from "./class.js?v=20261114-1";
+// 四个主 tab + 三个子页（聊天 / 通话详情 / 课堂）。
+const VIEWS = ["chats", "class", "calls", "moments", "me", "chat", "call"];
 
 // 子页 push 进去后底部仍然亮着所属的 tab。
-const TAB_OF = { chat: "chats", call: "calls" };
+const TAB_OF = { chat: "chats", call: "calls", class: "chats" };
 
 const tabs = [...document.querySelectorAll(".tab")];
 const tabbar = document.querySelector(".tabbar");
@@ -27,9 +27,9 @@ function showView(name) {
     view.hidden = !on;
     view.classList.toggle("is-active", on);
   }
-  // 对话/通话详情页全屏：底部栏也收起来，不然输入框下面还垫一层 safe-area，
+  // 对话/通话详情/课堂全屏：底部栏也收起来，不然输入框下面还垫一层 safe-area，
   // iPhone 上会多出一条空白。
-  tabbar.hidden = name === "chat" || name === "call";
+  tabbar.hidden = name === "chat" || name === "call" || name === "class";
 
   const tabFor = TAB_OF[name] ?? name;
   for (const tab of tabs) {
@@ -38,7 +38,7 @@ function showView(name) {
   }
   // 每次进 Calls 重画列表（点评可能刚在后台生成完）
   if (name === "calls") calls.refresh();
-  if (name === "practice") practice.refresh();
+  if (name === "class") fionaClass.refresh();
   if (name === "chats") chat.refresh();
 }
 
@@ -52,13 +52,16 @@ const chat = initChat({
   back: () => showView("chats"),
   // Chat 里的通话记录行 → 跳到 Calls 的对应详情
   openCall: (id) => calls.open(id),
+  // Fiona's Class 服务号入口 → 全屏课堂页
+  openClass: () => showView("class"),
 });
 leaveChat = () => chat.close();
 
-const practice = initPractice({
+const fionaClass = initClass({
+  back: () => showView("chats"),
   open: (unitId) => {
     const fiona = findPersona?.("persona-Fiona");
-    if (fiona) chat.openPractice(fiona, unitId);
+    if (fiona) chat.openClassCall(fiona, unitId);
   },
 });
 

@@ -400,3 +400,10 @@ npx wrangler deploy                  # 改了 site/ 必须部署，workers.dev �
 - 迁移：首次 drain 用 `cron_health.jobs_migrated` 守卫，清掉所有存量 `reply_due_at/turn_id` 孤儿，给最后一条未回用户消息补 reply job；存量主动由 tick 重新抽（成功才计，无需补偿）。旧列保留只读。
 - 关键修复：`drain()` 开头补 `bind_worker_env(env)` + `auth.bind_r2(env)`（fetch 一直有，cron 丢了）。
 - 线上验证：schema 已 apply；部署后 reconcile 清掉 riceball 卡死回合，tick 把 proactive_date 复位到 11-10；selftest job 第 3 次重试生成成功（证明 cron 侧 key 已恢复）；riceball/Leo 真实抽中并生成 2 条主动消息、`proactive_sent=1`、job=done；77 条历史未推全部清账；dead=0。`py_compile`/`test_convo`/`smoke` 全 PASS。
+
+## Fiona's Class 服务号：撤掉 Practice tab（2026-11-14）
+
+- Chats 增加 `Fiona's Class` 服务号行：同头像、暖金名字 + `Class` 标签，按最近活动排序；点击把 `fluentchat:classAt` 置为当前时间并浮到列表上方。没有未读、预览或主动消息，提醒只走 Fiona 私聊。
+- 课堂从第五个 tab 改成全屏子页：`view-class` + 返回 Chats，隐藏 tabbar；页面是 Fiona 第一人称介绍 + `Start here` / `For work` 两组主题，去掉 Unit 编号、章节大写头和进度面板。
+- `practice.js` → `class.js`；`/practice/plan` 返回 `intro` + `units`；`prompts/practice_room.md` → `prompts/fiona_class.md`，通话记录文案改为 `Class call`。
+- 验证：`node --check`、`py_compile`、`python3 tools/gen_prompts.py`、`node tools/smoke.mjs` 全 PASS（含课堂打开/返回/发起 `/token(practice)`）。

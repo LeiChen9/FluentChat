@@ -18,7 +18,7 @@ from backend.common import (ENDPOINTS, _load_subs, _save_subs,
                             bind_worker_env, env_key, run_chain, vapid_pubkey)
 from backend.prompt_data import PROMPTS
 from backend.time_context import DEFAULT_TZ_OFFSET, build_time_context, clamp_tz
-from backend.units import UNIT_META
+from backend.units import CLASS_INTRO, UNIT_META
 from backend.config import (AUTH_TOKENS_URL, HEAVY_USERS_PER_TICK,
                             HIST_MAX_CHARS, HIST_MAX_ITEMS, MODEL, NAMES,
                             PERSONAS, SPLIT_CAPS, UNITS, VOICE, VOICE_BY_ID)
@@ -258,7 +258,7 @@ def build_system_instruction(
     else:
         parts = [read_prompt(base_name)]
         if practice:
-            parts.append(read_prompt("practice_room"))
+            parts.append(read_prompt("fiona_class"))
         parts.append(read_prompt(f"{unit}.md"))
         text = "\n\n".join(parts)
         dated = [{"who": h["who"], "text": h["text"], "prefix": ""} for h in history]
@@ -372,7 +372,7 @@ async def _migrate(env, user: str) -> None:
             kind = item.get("kind") or ("transcript" if item.get("hidden") else "text")
             if kind == "call":
                 dur = int(item.get("dur") or 0)
-                text = f"{'Practice call' if item.get('practice') else 'Voice call'} · {dur // 60000}:{dur % 60000 // 1000:02d}"
+                text = f"{'Class call' if item.get('practice') else 'Voice call'} · {dur // 60000}:{dur % 60000 // 1000:02d}"
                 who = "me"
             else:
                 text = str(item.get("text") or "")
@@ -437,6 +437,7 @@ class Default(WorkerEntrypoint):
             if not user:
                 return Response.json({"error": "请先登录"}, status=401)
             return Response.json({
+                "intro": CLASS_INTRO,
                 "units": [
                     {"id": uid, "chapter": chapter, "title": title, "can_do": can_do}
                     for uid, (chapter, title, can_do) in UNIT_META.items()
@@ -596,7 +597,7 @@ class Default(WorkerEntrypoint):
                     {"error": f"unit 必须是 {sorted(UNITS | PERSONAS)} 之一"}, status=400)
             practice = bool(body.get("practice"))
             if practice and unit not in UNITS:
-                return Response.json({"error": "practice 只收 unit-XX"}, status=400)
+                return Response.json({"error": "class 只收 unit-XX"}, status=400)
             tz_offset = clamp_tz(body.get("tz"))
             if unit in PERSONAS:
                 await convo.set_tz(self.env, user, tz_offset)

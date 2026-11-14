@@ -10,7 +10,7 @@
 <title>FluentChat</title>
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="assets/FluentChat.png">
-<link rel="stylesheet" href="css/app.css?v=20261103-7">
+<link rel="stylesheet" href="css/app.css?v=20261114-2">
 </head>
 <body>
 <div class="app">
@@ -25,13 +25,25 @@
       <ul class="row-list" id="chat-list"></ul>
     </section>
 
-    <!-- ── Practice：Fiona 的 5 分钟练习房间 ── -->
-    <section class="view" id="view-practice" hidden>
-      <header class="page-head">
-        <h1 class="page-title">Practice</h1>
-        <p class="page-sub">5-minute calls with Fiona</p>
+    <!-- ── Fiona's Class：她自己的服务号，一节课一个话题 ── -->
+    <section class="view view--chat" id="view-class" hidden>
+      <header class="chat-head class-head">
+        <button class="chat-back" id="class-back" type="button" aria-label="Back to chats">
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M15 4.5 7.5 12 15 19.5" stroke="currentColor" stroke-width="2.2"
+                  stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+
+        <span class="avatar chat-av"><img src="assets/contacts/Fiona/avatar.png" alt=""></span>
+
+        <span class="chat-id">
+          <b>Fiona's Class</b>
+          <i>English, one topic at a time</i>
+        </span>
       </header>
-      <ul class="row-list" id="practice-list"></ul>
+
+      <div class="chat-body class-body" id="class-body"></div>
     </section>
 
     <!-- ── 通话记录：每次通话一条，点进去看转写和点评 ── -->
@@ -52,7 +64,7 @@
       <div class="moment-list" id="moment-list"></div>
     </section>
 
-    <!-- ── 对话页：Unit 列表点一个就 push 进这里，像 WhatsApp 单个聊天 ── -->
+    <!-- ── 对话页：朋友或课堂主题点一个就 push 进这里，像 WhatsApp 单个聊天 ── -->
     <section class="view view--chat" id="view-chat" hidden>
       <header class="chat-head">
         <button class="chat-back" id="chat-back" type="button" aria-label="Back to chats">
@@ -207,21 +219,13 @@
     </form>
   </div>
 
-  <!-- ── 底部栏：聊天 / 联系人 / 朋友圈 / Me ── -->
+  <!-- ── 底部栏：聊天 / 通话 / 朋友圈 / Me ── -->
   <nav class="tabbar" role="tablist" aria-label="Main tabs">
     <button class="tab" role="tab" data-view="chats" aria-selected="true" aria-controls="view-chats">
       <svg viewBox="0 0 28 28" fill="none" aria-hidden="true">
         <path d="M9 4.5h10a6 6 0 0 1 6 6v3.5a6 6 0 0 1-6 6h-3.6l-5.4 3.2V20H9a6 6 0 0 1-6-6v-3.5a6 6 0 0 1 6-6Z" fill="currentColor"/>
       </svg>
       <span>Chats</span>
-    </button>
-
-    <button class="tab" role="tab" data-view="practice" aria-controls="view-practice">
-      <svg viewBox="0 0 28 28" fill="none" aria-hidden="true">
-        <rect x="11" y="4.5" width="6" height="11" rx="3" fill="currentColor"/>
-        <path d="M8 13a6 6 0 0 0 12 0M14 19v4M10 23h8" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>
-      </svg>
-      <span>Practice</span>
     </button>
 
     <button class="tab" role="tab" data-view="calls" aria-controls="view-calls">
@@ -250,6 +254,6 @@
   </nav>
 
 </div>
-<script type="module" src="js/app.js?v=20261109-1"></script>
+<script type="module" src="js/app.js?v=20261114-2"></script>
 </body>
 </html>

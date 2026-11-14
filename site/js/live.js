@@ -29,7 +29,7 @@ export function fmtRowTime(ts) {
 
 const STATUS_LABEL = { active: "Active", away: "Away", busy: "Busy", offline: "Offline" };
 
-export function initChat({ show, back, openCall }) {
+export function initChat({ show, back, openCall, openClass }) {
   const nameEl = document.getElementById("chat-name");
   const stateEl = document.getElementById("chat-state");
   const avEl = document.getElementById("chat-av");
@@ -150,6 +150,32 @@ export function initChat({ show, back, openCall }) {
         at: 0,
       });
     }
+
+    // Fiona's Class：她自己的服务号，和聊天行一样按最近活动时间排序；
+    // 点进去后把 at 置为现在，它就会浮上去。没有未读、没有预览。
+    let classAt = 0;
+    try { classAt = Number(localStorage.getItem("fluentchat:classAt")) || 0; } catch {}
+    const fiona = people.find((p) => p.id === "persona-Fiona");
+    const classLi = document.createElement("li");
+    const classBtn = document.createElement("button");
+    classBtn.type = "button";
+    classBtn.className = "row row--class";
+    classBtn.innerHTML =
+      `<span class="row__avwrap"><img class="row__av" src="${fiona?.avatar || "assets/contacts/Fiona/avatar.png"}" alt=""></span>` +
+      `<span class="row__text"><b class="row__name">Fiona's Class<i class="row__tag">Class</i></b><i>English, one topic at a time</i></span>` +
+      `<span class="row__time"></span>`;
+    classBtn.addEventListener("click", () => {
+      const now = Date.now();
+      const row = rowOf.get("class");
+      if (row) row.at = now;
+      try { localStorage.setItem("fluentchat:classAt", String(now)); } catch {}
+      sortRows();
+      openClass?.();
+    });
+    classLi.append(classBtn);
+    chatList.append(classLi);
+    rowOf.set("class", { li: classLi, at: classAt });
+
     refresh();
   });
 
@@ -535,7 +561,7 @@ export function initChat({ show, back, openCall }) {
     startMic().then(() => { if (micReady) micActive = true; });
   }
 
-  function openPractice(u, unitId) {
+  function openClassCall(u, unitId) {
     ensureAudio();
     openChat(u);
     startCall(unitId);
@@ -583,7 +609,7 @@ export function initChat({ show, back, openCall }) {
       turns: [],
     };
     callBox.hidden = false;
-    callName.textContent = practiceUnit ? `${unit.name} · Practice` : unit.name;
+    callName.textContent = practiceUnit ? `${unit.name} · Class` : unit.name;
     callSaid.textContent = "";
     setCallState("Connecting…");
     enableMic();
@@ -609,7 +635,7 @@ export function initChat({ show, back, openCall }) {
     if (!rec || !rec.connected) return;
     rec.dur = Math.max(0, Date.now() - rec.start);
     const id = saveCall(rec);
-    const text = `${rec.practice ? "Practice call" : "Voice call"} · ${fmtDur(rec.dur)}`;
+    const text = `${rec.practice ? "Class call" : "Voice call"} · ${fmtDur(rec.dur)}`;
     if (!rec.chatUnit?.startsWith("persona-")) return;
     fetch("/transcript", {
       method: "POST",
@@ -622,7 +648,7 @@ export function initChat({ show, back, openCall }) {
     const node = document.createElement("button");
     node.type = "button";
     node.className = "msg msg--call";
-    node.textContent = item.text || `${item.practice ? "Practice call" : "Voice call"} · ${fmtDur(item.dur)}`;
+    node.textContent = item.text || `${item.practice ? "Class call" : "Voice call"} · ${fmtDur(item.dur)}`;
     node.dataset.id = item.id || "";
     if (item.id) node.addEventListener("click", () => openCall?.(item.id));
     body.append(node);
@@ -853,6 +879,6 @@ export function initChat({ show, back, openCall }) {
     refresh,
     refreshStatuses: refresh,
     open: openChat,
-    openPractice,
+    openClassCall,
   };
 }
