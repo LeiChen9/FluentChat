@@ -18,7 +18,7 @@ from backend.common import (ENDPOINTS, _load_subs, _save_subs,
                             bind_worker_env, env_key, run_chain, vapid_pubkey)
 from backend.prompt_data import PROMPTS
 from backend.time_context import DEFAULT_TZ_OFFSET, build_time_context, clamp_tz
-from backend.units import CLASS_INTRO, UNIT_META
+from backend.units import CLASS_INTRO, UNIT_META, UNIT_PHRASES
 from backend.config import (AUTH_TOKENS_URL, HEAVY_USERS_PER_TICK,
                             HIST_MAX_CHARS, HIST_MAX_ITEMS, MODEL, NAMES,
                             PERSONAS, SPLIT_CAPS, UNITS, VOICE, VOICE_BY_ID)
@@ -436,7 +436,8 @@ class Default(WorkerEntrypoint):
             return Response.json({
                 "intro": CLASS_INTRO,
                 "units": [
-                    {"id": uid, "chapter": chapter, "title": title, "can_do": can_do}
+                    {"id": uid, "chapter": chapter, "title": title, "can_do": can_do,
+                     "phrases": list(UNIT_PHRASES.get(uid, ()))}
                     for uid, (chapter, title, can_do) in UNIT_META.items()
                 ]
             })

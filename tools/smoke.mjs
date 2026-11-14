@@ -60,8 +60,8 @@ for (const i of ["chat-list","moment-list","chat-name","chat-state","chat-av",
   "call","call-av","call-name","call-state","call-said","call-end",
   "call-back","call-list","call-detail-name","call-detail-meta","call-detail-body",
   "auth","auth-form","auth-user","auth-pass","auth-err","auth-reg",
-  "view-chats","view-class","view-calls","view-moments","view-me","view-chat","view-call",
-  "class-body","class-back",
+  "view-chats","view-class","view-class-topic","view-calls","view-moments","view-me","view-chat","view-call",
+  "class-body","class-back","class-topic-body","class-topic-back","class-topic-call","class-topic-kicker",
   "push-enable","push-note","push-err","profile-err","profile-row","me-avatar",
   "me-user","avatar-file","logout-row","notif-sheet","notif-sheet-close"]) els.set(i, mkEl(i));
 const tabs = [
@@ -159,8 +159,10 @@ globalThis.fetch = async (url, opts) => {
   if (u === "/practice/plan") return json({
     intro: "I'm an English teacher. Pick a topic and we'll talk for five minutes.",
     units: [
-      { id: "unit-01", chapter: "survival", title: "Meet Me", can_do: "Say hello." },
-      { id: "unit-07", chapter: "expression", title: "At Work", can_do: "What you do." },
+      { id: "unit-01", chapter: "survival", title: "Meet Me", can_do: "Say hello.",
+        phrases: ["I'm from…", "I work as…", "I'm into…"] },
+      { id: "unit-07", chapter: "expression", title: "At Work", can_do: "What you do.",
+        phrases: ["I work on…", "My day is mostly…", "I'm responsible for…"] },
     ],
   });
   if (u === "/call-review") return json({ overall: "ok", good: [], improve: [], focus: [], lines: [] });
@@ -233,8 +235,27 @@ classRow.children[0].fire("click");
 await tick(20);
 topicRows[0].fire("click");
 await tick(20);
+if (els.get("view-class-topic").hidden) throw new Error("topic did not open detail");
+const topicBody = els.get("class-topic-body");
+const topicTitle = topicBody.querySelector(".class-topic-hero__title");
+if (!topicTitle || topicTitle.textContent !== "Meet Me") throw new Error("topic title missing");
+const phraseList = topicBody.querySelector(".class-phrases");
+if (!phraseList || phraseList.children.length !== 3) throw new Error("topic phrases missing");
+console.log("✓ 主题卡进入课程详情，目标/流程/表达已渲染");
+
+els.get("class-topic-back").fire("click");
+await tick(20);
+if (els.get("view-class").hidden || !els.get("view-class-topic").hidden) {
+  throw new Error("detail back did not return to class");
+}
+console.log("✓ 详情返回课程列表");
+
+topicRows[0].fire("click");
+await tick(20);
+els.get("class-topic-call").fire("click");
+await tick(20);
 const classToken = calls.find((c) => c.url === "/token" && c.body?.practice);
 if (!classToken || classToken.body.unit !== "unit-01") throw new Error("class token missing");
-console.log("✓ 主题卡仍能发起课堂通话");
+console.log("✓ 详情页圆形通话按钮发起课堂通话");
 console.log("SMOKE PASS");
 process.exit(0);

@@ -1,12 +1,12 @@
 import { initChat, fmtRowTime } from "./live.js?v=20261114-4";
 import { loadContacts } from "./personas.js?v=20261114-4";
 import { initCalls } from "./calls.js?v=20261114-4";
-import { initClass } from "./class.js?v=20261114-1";
+import { initClass } from "./class.js?v=20261114-5";
 // 四个主 tab + 三个子页（聊天 / 通话详情 / 课堂）。
-const VIEWS = ["chats", "class", "calls", "moments", "me", "chat", "call"];
+const VIEWS = ["chats", "class", "class-topic", "calls", "moments", "me", "chat", "call"];
 
 // 子页 push 进去后底部仍然亮着所属的 tab。
-const TAB_OF = { chat: "chats", call: "calls", class: "chats" };
+const TAB_OF = { chat: "chats", call: "calls", class: "chats", "class-topic": "chats" };
 
 const tabs = [...document.querySelectorAll(".tab")];
 const tabbar = document.querySelector(".tabbar");
@@ -29,7 +29,7 @@ function showView(name) {
   }
   // 对话/通话详情/课堂全屏：底部栏也收起来，不然输入框下面还垫一层 safe-area，
   // iPhone 上会多出一条空白。
-  tabbar.hidden = name === "chat" || name === "call" || name === "class";
+  tabbar.hidden = name === "chat" || name === "call" || name === "class" || name === "class-topic";
 
   const tabFor = TAB_OF[name] ?? name;
   for (const tab of tabs) {
@@ -59,7 +59,9 @@ leaveChat = () => chat.close();
 
 const fionaClass = initClass({
   back: () => showView("chats"),
-  open: (unitId) => {
+  backTopic: () => showView("class"),
+  showTopic: () => showView("class-topic"),
+  call: (unitId) => {
     const fiona = findPersona?.("persona-Fiona");
     if (fiona) chat.openClassCall(fiona, unitId);
   },
