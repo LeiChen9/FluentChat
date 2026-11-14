@@ -77,6 +77,42 @@
 - **边界**：普通聊天继续用 persona + `text_style.md`，不纠错；课堂里才允许老师规则，两套 prompt 不混写。
 - **未接**：语音配额计量、`learn.json` 进度、课堂完成率。
 
+## 朋友圈（Moments）
+
+产品设计见 [design_moments.md](design_moments.md)。这里只记实现边界。
+
+- **分层**：全局 canon（共享、只读、永不带用户）+ 用户 overlay（每账户独立）。feed = canon 最近窗口 + overlay，按 `published_at` 合并。
+- **canon**：NPC 生活弧线/日常动态；一次生成，所有用户读同一份；是聊天和回声的事实源。时间戳用 NPC 时区，`published_at` 可落未来，feed 只取 `<= now`。
+- **overlay**：用户自己的动态、极低频回声、点赞/评论、NPC 对用户评论的回复、隐藏亲近感。用户 A 的 overlay 不得出现在用户 B 的 feed。
+- **新用户窗口**：最近 2–4 周 / 最多 20 条 canon；更早的归档，不塞给新用户补课。
+- **数据（D1）**：
+  - `moment_posts(id, scope, user, unit, kind, text, published_at, arc_id, beat, meta)`；canon 的 `user=''`，scope 为 `canon|echo|user`。
+  - `moment_reactions(moment_id, user, actor, kind, text, parent_id, created_at)`；`actor` 为 `me` 或 persona；canon 下的点赞/评论天然 per-user。
+  - `moment_relationship(user, unit, closeness, last_echo_at, last_comment_at, weekly_comments, week_start)`。
+  - 索引至少覆盖 `(scope, published_at)`、`(user, published_at)`、`(moment_id, user, created_at)`。
+- **种子**：现有 `site/assets/contacts/*/moments.json` 导入为 canon 种子后退役；静态文件不再作为运行时真源。
+- **接口**：
+  - `GET /moments?before=&limit=`：返回 canon 窗口 + 当前用户 overlay，附当前用户 like 状态、评论、NPC 回复。
+  - `POST /moments`：用户发文字动态，校验长度后落 `scope='user'`。
+  - `POST /moments/:id/like`：点赞/取消，只写当前用户。
+  - `POST /moments/:id/comment`：用户评论；只写当前用户 overlay。
+- **job**：
+  - `moment_canon`：全局每周生成 3–5 条 canon，按 NPC 弧线 beat 排期。
+  - `moment_echo`：按用户触发，延迟 2–7 天；每 NPC 2–3 周最多 1 条，全局每周最多 1 条。
+  - `moment_react`：用户发帖后评估 0–2 个 NPC 反应；延迟 10 分钟到几小时，评论后 48–72 小时冷却。
+- **生成**：
+  - `backend/moment_data.py` 存每个 NPC 的 3–4 条慢弧线和 beat。
+  - `prompts/` 新增 `moment_canon.md`、`moment_echo.md`、`moment_reaction.md`。
+  - canon 禁止出现用户；echo 允许用户作为原因，禁止夸奖；reaction 必须包含具体观察/问题/玩笑/不同意/自述之一。
+  - 不做图片；emoji/颜文字直接进 `text`。
+- **一致性**：聊天和回声都要读 canon，避免「朋友圈说餐车坏了，聊天里餐车还在营业」；echo 只能引用 canon，不能改写。
+- **Phase**：
+  1. 建表 + 导入 canon 种子 + `GET /moments` + 前端只读 feed。
+  2. 用户发帖 + 点赞/评论 + per-user 存储。
+  3. NPC 反应引擎（0–2 人、延迟、冷却、周上限）。
+  4. 全局 canon 生成 + 用户 echo + 聊天读 canon。
+- **测试**：feed 合并/窗口/隔离；用户 A 的评论和 echo 不出现在 B；反应预算与冷却；canon 零用户提及；echo 无夸奖；reaction 无 generic praise；smoke 覆盖发帖、点赞、评论、NPC 回复、空状态。
+
 ## Web Push（iOS 主屏幕 Web App）
 
 - 用户需在 iOS 16.4+ 的 Safari 中分享网站并选择“添加到主屏幕”，再从主屏幕打开 Web App 并主动授权通知；普通 Safari 标签页不支持此推送流程。
