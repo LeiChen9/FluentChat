@@ -160,10 +160,34 @@ globalThis.fetch = async (url, opts) => {
   if (u === "/practice/plan") return json({
     intro: "I'm an English teacher. Pick a topic and we'll talk for five minutes.",
     units: [
-      { id: "unit-01", chapter: "survival", title: "Meet Me", can_do: "Say hello.",
-        phrases: ["I'm from…", "I work as…", "I'm into…"] },
-      { id: "unit-07", chapter: "expression", title: "At Work", can_do: "What you do.",
-        phrases: ["I work on…", "My day is mostly…", "I'm responsible for…"] },
+      {
+        id: "unit-01", chapter: "survival", title: "Meet Me", can_do: "Say hello.",
+        lesson: {
+          scene: "You've just joined a small English meetup.",
+          outcomes: ["Introduce yourself", "Say where you're from", "Ask one question back"],
+          questions: ["Where are you from originally?", "What do you do?", "What do you do for fun?"],
+          phrases: [
+            { text: "I'm originally from…", note: "Use it when you live somewhere else now.", example: "I'm from Chengdu." },
+            { text: "I work as…", note: "Describe your job in one line.", example: "I work as a designer." },
+            { text: "I'm into…", note: "Talk about hobbies you enjoy.", example: "I'm into photography." },
+          ],
+          challenge: "Answer all three questions without switching to Chinese.",
+          prep: "Think of one small detail about your week.",
+        },
+      },
+      {
+        id: "unit-07", chapter: "expression", title: "At Work", can_do: "What you do.",
+        lesson: {
+          scene: "Fiona asks what you actually do all day.",
+          outcomes: ["Explain your role", "Describe a workday", "Name one responsibility"],
+          questions: ["What do you do all day?", "Who do you work with?", "What are you responsible for?"],
+          phrases: [
+            { text: "I work on…", note: "Describe your main project.", example: "I work on the mobile app." },
+          ],
+          challenge: "Explain your job in 40 seconds.",
+          prep: "Think of one task a friend outside work would understand.",
+        },
+      },
     ],
   });
   if (u === "/call-review") return new Promise(() => {});
@@ -240,9 +264,20 @@ if (els.get("view-class-topic").hidden) throw new Error("topic did not open deta
 const topicBody = els.get("class-topic-body");
 const topicTitle = topicBody.querySelector(".class-topic-hero__title");
 if (!topicTitle || topicTitle.textContent !== "Meet Me") throw new Error("topic title missing");
-const phraseList = topicBody.querySelector(".class-phrases");
-if (!phraseList || phraseList.children.length !== 3) throw new Error("topic phrases missing");
-console.log("✓ 主题卡进入课程详情，目标/流程/表达已渲染");
+if (topicBody.dataset.chapter !== "survival") throw new Error("topic chapter missing");
+const scene = topicBody.querySelector(".class-topic-hero__scene");
+if (!scene || !scene.textContent.includes("English meetup")) throw new Error("topic scene missing");
+if (topicBody.querySelectorAll(".class-topic-check").length !== 3) {
+  throw new Error("topic outcomes missing");
+}
+if (topicBody.querySelectorAll(".class-question__no").length !== 3) {
+  throw new Error("topic questions missing");
+}
+if (topicBody.querySelectorAll(".class-phrase").length !== 3) {
+  throw new Error("topic phrase cards missing");
+}
+if (!topicBody.querySelector(".class-topic-challenge")) throw new Error("topic challenge missing");
+console.log("✓ 主题卡进入课程详情，场景/目标/提问/表达/挑战已渲染");
 
 els.get("class-topic-back").fire("click");
 await tick(20);

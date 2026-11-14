@@ -1,11 +1,15 @@
 // Fiona's Class：读 /practice/plan，把 12 个 Unit 当作她课堂里的主题。
-const SECTIONS = { survival: "Start here", expression: "For work" };
-const LEVELS = { survival: "A2", expression: "B1" };
-const STEPS = [
-  ["Warm up", "A quick hello and one easy question."],
-  ["Talk", "We'll stay on this topic and build a few real answers."],
-  ["Wrap up", "One small thing to try next time."],
-];
+const CHAPTERS = {
+  survival: { label: "Start here", level: "A2" },
+  expression: { label: "For work", level: "B1" },
+};
+
+function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text != null) node.textContent = text;
+  return node;
+}
 
 export function initClass({ back, backTopic, showTopic, call }) {
   const body = document.getElementById("class-body");
@@ -32,130 +36,134 @@ export function initClass({ back, backTopic, showTopic, call }) {
     } catch (e) {
       loaded = false;
       body.replaceChildren();
-      const p = document.createElement("p");
-      p.className = "class-empty";
-      p.textContent = `Class unavailable: ${e.message}`;
-      body.append(p);
+      body.append(el("p", "class-empty", `Class unavailable: ${e.message}`));
     }
   }
 
   function render(data) {
     body.replaceChildren();
 
-    const intro = document.createElement("section");
-    intro.className = "class-intro";
-    const label = document.createElement("p");
-    label.className = "class-intro__label";
-    label.textContent = "From Fiona";
-    const text = document.createElement("p");
-    text.className = "class-intro__text";
-    text.textContent = data.intro
-      || "I'm an English teacher. Pick a topic and we'll talk for five minutes.";
-    const sign = document.createElement("p");
-    sign.className = "class-intro__sign";
-    sign.textContent = "— Fiona";
-    intro.append(label, text, sign);
+    const intro = el("section", "class-intro");
+    intro.append(
+      el("p", "class-intro__label", "From Fiona"),
+      el("p", "class-intro__text", data.intro
+        || "I'm an English teacher. Pick a topic and we'll talk for five minutes."),
+      el("p", "class-intro__sign", "— Fiona"),
+    );
 
-    const topics = document.createElement("div");
-    topics.className = "class-topics";
+    const topics = el("div", "class-topics");
     const units = data.units || [];
-    for (const [chapter, title] of Object.entries(SECTIONS)) {
+    for (const [chapter, meta] of Object.entries(CHAPTERS)) {
       const group = units.filter((u) => u.chapter === chapter);
       if (!group.length) continue;
-      const head = document.createElement("h2");
-      head.className = "class-section";
-      head.textContent = title;
-      topics.append(head);
-      for (const u of group) {
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "class-topic";
-        const textWrap = document.createElement("span");
-        textWrap.className = "class-topic__text";
-        const name = document.createElement("b");
-        name.textContent = u.title;
-        const line = document.createElement("i");
-        line.textContent = u.can_do;
-        textWrap.append(name, line);
-        const meta = document.createElement("span");
-        meta.className = "class-topic__meta";
-        meta.textContent = "5 min · voice";
-        const chev = document.createElement("span");
-        chev.className = "class-topic__chev";
-        chev.textContent = "›";
-        chev.setAttribute("aria-hidden", "true");
-        btn.append(textWrap, meta, chev);
-        btn.addEventListener("click", () => openTopic(u));
-        topics.append(btn);
-      }
+      topics.append(el("h2", "class-section", meta.label));
+      for (const u of group) topics.append(topicRow(u));
     }
     body.append(intro, topics);
   }
 
+  function topicRow(u) {
+    const btn = el("button", "class-topic");
+    btn.type = "button";
+    const text = el("span", "class-topic__text");
+    text.append(el("b", "", u.title), el("i", "", u.can_do));
+    const chev = el("span", "class-topic__chev", "›");
+    chev.setAttribute("aria-hidden", "true");
+    btn.append(text, el("span", "class-topic__meta", "5 min · voice"), chev);
+    btn.addEventListener("click", () => openTopic(u));
+    return btn;
+  }
+
   function openTopic(u) {
     topic = u;
-    topicKicker.textContent = `Lesson ${lessonNo(u.id)} · ${LEVELS[u.chapter] || "A2"} · 5 min`;
+    const level = CHAPTERS[u.chapter]?.level || "A2";
+    topicKicker.textContent = `Lesson ${lessonNo(u.id)} · ${level} · 5 min`;
     topicBody.replaceChildren();
+    topicBody.dataset.chapter = u.chapter || "expression";
 
-    const hero = document.createElement("section");
-    hero.className = "class-topic-hero";
-    const label = document.createElement("p");
-    label.className = "class-topic-hero__label";
-    label.textContent = `Lesson ${lessonNo(u.id)} · 1-on-1`;
-    const title = document.createElement("h1");
-    title.className = "class-topic-hero__title";
-    title.textContent = u.title;
-    const goal = document.createElement("p");
-    goal.className = "class-topic-hero__goal";
-    goal.textContent = u.can_do;
-    hero.append(label, title, goal);
+    const lesson = u.lesson || {};
+    const outcomes = lesson.outcomes || [];
+    const questions = lesson.questions || [];
+    const phrases = lesson.phrases || [];
 
-    const steps = section("What we'll do");
-    const list = document.createElement("ol");
-    list.className = "class-steps";
-    for (const [i, [name, line]] of STEPS.entries()) {
-      const li = document.createElement("li");
-      const no = document.createElement("span");
-      no.className = "class-step__no";
-      no.textContent = String(i + 1);
-      const wrap = document.createElement("span");
-      wrap.className = "class-step__text";
-      const b = document.createElement("b");
-      b.textContent = name;
-      const detail = document.createElement("span");
-      detail.textContent = line;
-      wrap.append(b, detail);
-      li.append(no, wrap);
-      list.append(li);
+    const hero = el("section", "class-topic-hero");
+    const meta = el("div", "class-topic-hero__top");
+    meta.append(
+      el("p", "class-topic-hero__label", "Today's scenario"),
+      el("span", "class-topic-hero__badge", `${level} · 5 min`),
+    );
+    hero.append(
+      meta,
+      el("h1", "class-topic-hero__title", u.title),
+      el("p", "class-topic-hero__scene", lesson.scene || u.can_do),
+    );
+
+    if (outcomes.length) {
+      const list = el("ul", "class-topic-outcomes");
+      for (const outcome of outcomes) {
+        const li = el("li");
+        const check = el("span", "class-topic-check", "✓");
+        check.setAttribute("aria-hidden", "true");
+        li.append(check, el("span", "", outcome));
+        list.append(li);
+      }
+      hero.append(el("p", "class-topic-outcomes-label", "By the end, you can"), list);
     }
-    steps.append(list);
+    topicBody.append(hero);
 
-    const phrases = section("Useful phrases");
-    const phraseList = document.createElement("ul");
-    phraseList.className = "class-phrases";
-    for (const phrase of u.phrases || []) {
-      const li = document.createElement("li");
-      li.textContent = phrase;
-      phraseList.append(li);
+    if (questions.length) {
+      const sec = section("Fiona will ask", "?");
+      const list = el("ol", "class-questions");
+      for (const [i, question] of questions.entries()) {
+        const li = el("li");
+        li.append(el("span", "class-question__no", String(i + 1)), el("span", "", question));
+        list.append(li);
+      }
+      sec.append(list);
+      topicBody.append(sec);
     }
-    phrases.append(phraseList);
 
-    const note = document.createElement("p");
-    note.className = "class-topic-note";
-    note.textContent = "Before we start, think of one real example. That's all the prep you need.";
-    const noteSign = document.createElement("i");
-    noteSign.textContent = "— Fiona";
-    note.append(document.createElement("br"), noteSign);
+    if (phrases.length) {
+      const sec = section("Phrases to borrow", "“");
+      const list = el("div", "class-phrase-list");
+      for (const phrase of phrases) {
+        const card = el("article", "class-phrase");
+        card.append(el("b", "class-phrase__text", phrase.text));
+        if (phrase.note) card.append(el("p", "class-phrase__note", phrase.note));
+        if (phrase.example) {
+          card.append(el("p", "class-phrase__example", `“${phrase.example}”`));
+        }
+        list.append(card);
+      }
+      sec.append(list);
+      topicBody.append(sec);
+    }
 
-    topicBody.append(hero, steps, phrases, note);
+    if (lesson.challenge || lesson.prep) {
+      const card = el("section", "class-topic-challenge");
+      if (lesson.challenge) {
+        card.append(
+          el("p", "class-topic-challenge__label", "Your 5-minute challenge"),
+          el("p", "class-topic-challenge__text", lesson.challenge),
+        );
+      }
+      if (lesson.prep) {
+        const prep = el("div", "class-topic-challenge__prep");
+        prep.append(el("span", "", "Before you call"), el("p", "", lesson.prep));
+        card.append(prep);
+      }
+      topicBody.append(card);
+    }
+
     showTopic();
   }
 
-  function section(title) {
-    const node = document.createElement("section");
-    node.className = "class-topic-section";
-    const head = document.createElement("h2");
-    head.textContent = title;
+  function section(title, mark) {
+    const node = el("section", "class-topic-section");
+    const head = el("div", "class-topic-section__head");
+    const icon = el("span", "class-topic-section__mark", mark);
+    icon.setAttribute("aria-hidden", "true");
+    head.append(icon, el("h2", "", title));
     node.append(head);
     return node;
   }

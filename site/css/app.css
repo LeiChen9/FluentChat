@@ -797,6 +797,17 @@ button { font: inherit; color: inherit; }
 /* Fiona's Class：服务号首页。暖纸介绍 + 可点的主题卡，不做进度面板。 */
 .class-head .chat-id b { color: #8a5a12; }
 
+/* 列表、介绍、课程 Hero、Section、挑战卡共用同一套纸白表面。 */
+.class-intro,
+.class-topic,
+.class-topic-hero,
+.class-topic-section,
+.class-topic-challenge {
+  border: 0.5px solid var(--hairline);
+  border-radius: 16px;
+  background: var(--bubble-in);
+}
+
 .class-body {
   padding: 14px 16px calc(24px + env(safe-area-inset-bottom));
   gap: 0;
@@ -805,10 +816,6 @@ button { font: inherit; color: inherit; }
 .class-intro {
   margin: 4px 0 8px;
   padding: 18px 18px 16px;
-  border: 0.5px solid var(--hairline);
-  border-radius: 18px;
-  background: var(--bubble-in);
-  box-shadow: 0 10px 30px rgba(62, 54, 46, 0.06);
 }
 
 .class-intro__label {
@@ -851,9 +858,6 @@ button { font: inherit; color: inherit; }
   gap: 12px;
   width: 100%;
   padding: 14px;
-  border: 0.5px solid var(--hairline);
-  border-radius: 16px;
-  background: var(--bubble-in);
   text-align: left;
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
@@ -899,123 +903,204 @@ button { font: inherit; color: inherit; }
   font-size: 14px;
 }
 
-/* 课程详情：先看目标、流程和表达，再决定要不要打电话 */
+/* 课程详情：每课独有的场景、目标、提问、表达和挑战 */
 .class-topic-body {
+  --lesson-accent: #8a5a12;
+  --lesson-soft: rgba(138, 90, 18, 0.10);
   gap: 14px;
   padding: 18px 16px 22px;
 }
-
-.class-topic-hero {
-  padding: 20px 18px;
-  border: 0.5px solid var(--hairline);
-  border-radius: 20px;
-  background: var(--bubble-in);
-  box-shadow: 0 10px 30px rgba(62, 54, 46, 0.06);
+.class-topic-body[data-chapter="survival"] {
+  --lesson-accent: #4f7d45;
+  --lesson-soft: rgba(79, 125, 69, 0.10);
 }
 
+.class-topic-hero {
+  padding: 20px 18px 18px;
+}
+
+.class-topic-hero__top {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
 .class-topic-hero__label {
   margin: 0;
-  color: #8a5a12;
+  color: var(--lesson-accent);
   font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.class-topic-hero__badge {
+  flex: none;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: var(--lesson-soft);
+  color: var(--lesson-accent);
+  font-size: 11px;
+  font-weight: 700;
 }
 
 .class-topic-hero__title {
-  margin: 7px 0 8px;
-  font-size: 28px;
+  margin: 10px 0 8px;
+  font-size: 30px;
   font-weight: 700;
   letter-spacing: -0.02em;
 }
 
-.class-topic-hero__goal {
+.class-topic-hero__scene {
   margin: 0;
   color: var(--ink-2);
-  font-size: 15.5px;
-  line-height: 1.55;
+  font-size: 15px;
+  line-height: 1.58;
 }
 
-.class-topic-section {
-  padding: 16px;
-  border: 0.5px solid var(--hairline);
-  border-radius: 18px;
-  background: var(--bubble-in);
+.class-topic-outcomes-label {
+  margin: 16px 0 8px;
+  color: var(--ink-3);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
-
-.class-topic-section h2 {
-  margin: 0 0 12px;
-  font-size: 13px;
-  font-weight: 650;
-  color: var(--ink-2);
-}
-
-.class-steps {
+.class-topic-outcomes,
+.class-questions {
   display: flex;
   flex-direction: column;
-  gap: 12px;
   margin: 0;
   padding: 0;
   list-style: none;
 }
-
-.class-steps li {
+.class-topic-outcomes { gap: 7px; }
+.class-topic-outcomes li {
   display: flex;
   align-items: flex-start;
-  gap: 10px;
+  gap: 8px;
+  font-size: 13.5px;
+  line-height: 1.45;
 }
-
-.class-step__no {
+.class-topic-check,
+.class-question__no {
   flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--lesson-soft);
+  color: var(--lesson-accent);
+  font-weight: 800;
+}
+.class-topic-check { width: 18px; height: 18px; font-size: 11px; }
+
+.class-topic-section {
+  padding: 16px;
+}
+.class-topic-section__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.class-topic-section__mark {
   width: 22px;
   height: 22px;
   display: grid;
   place-items: center;
-  border-radius: 50%;
-  background: rgba(138, 90, 18, 0.12);
-  color: #8a5a12;
-  font-size: 12px;
+  border-radius: 7px;
+  background: var(--lesson-soft);
+  color: var(--lesson-accent);
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1;
+}
+.class-topic-section h2 {
+  margin: 0;
+  font-size: 13px;
   font-weight: 700;
+  color: var(--ink-2);
 }
 
-.class-step__text {
+.class-questions { gap: 11px; }
+.class-questions li {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 15px;
+  line-height: 1.48;
+}
+.class-question__no { width: 24px; height: 24px; font-size: 12px; }
+
+.class-phrase-list {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  font-size: 14px;
+  gap: 10px;
+}
+.class-phrase {
+  padding: 12px 13px;
+  border: 0.5px solid var(--hairline);
+  border-radius: 12px;
+  background: rgba(62, 54, 46, 0.035);
+}
+.class-phrase__text {
+  display: block;
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.4;
+}
+.class-phrase__note {
+  margin: 5px 0 0;
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 1.45;
+}
+.class-phrase__example {
+  margin: 6px 0 0;
+  color: var(--ink-3);
+  font-size: 12.5px;
+  font-style: italic;
   line-height: 1.45;
 }
 
-.class-step__text b { font-size: 14.5px; font-weight: 650; }
-.class-step__text span { color: var(--ink-2); }
-
-.class-phrases {
+.class-topic-challenge {
+  padding: 18px;
+  box-shadow: inset 2px 0 0 var(--lesson-accent);
+}
+.class-topic-challenge__label {
+  margin: 0;
+  color: var(--lesson-accent);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.class-topic-challenge__text {
+  margin: 9px 0 0;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+.class-topic-challenge__prep {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 0.5px solid var(--hairline);
 }
-
-.class-phrases li {
-  padding: 6px 10px;
-  border-radius: 999px;
-  background: var(--glow);
-  font-size: 13.5px;
+.class-topic-challenge__prep span {
+  color: var(--lesson-accent);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
-
-.class-topic-note {
+.class-topic-challenge__prep p {
   margin: 0;
-  padding: 14px 16px;
-  border-left: 2px solid #8a5a12;
-  border-radius: 0 14px 14px 0;
-  background: rgba(138, 90, 18, 0.06);
   color: var(--ink-2);
-  font-size: 14px;
-  line-height: 1.55;
+  font-size: 13.5px;
+  line-height: 1.5;
 }
-
-.class-topic-note i { color: var(--ink-3); font-style: normal; }
 
 .class-callbar {
   flex: 0 0 auto;
