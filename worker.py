@@ -548,6 +548,7 @@ class Default(WorkerEntrypoint):
             unit = body.get("unit")
             turns = clean_call_turns(body.get("turns"))
             call = body.get("call") or {}
+            practice = bool(body.get("practice"))
             if unit not in PERSONAS:
                 return Response.json({"error": "unit 非法"}, status=400)
             now = convo.now_ms()
@@ -556,7 +557,7 @@ class Default(WorkerEntrypoint):
                 await convo.append(self.env, user, unit, t["who"], t["text"], now + i,
                                    kind="transcript", hidden=1,
                                    client_id=f"{cid}:t{i}" if cid else None)
-            if cid and call.get("text"):
+            if not practice and cid and call.get("text"):
                 await convo.append(self.env, user, unit, "me", str(call["text"])[:120],
                                    now, kind="call", client_id=cid)
             return Response.json({"ok": True})

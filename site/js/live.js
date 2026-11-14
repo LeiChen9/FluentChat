@@ -353,6 +353,8 @@ export function initChat({ show, back, openCall, openClass }) {
     stopMic();
     stopPlayback();
     stopRingback();
+    callBox.hidden = true;
+    callSaid.textContent = "";
     if (ws) { try { ws.close(); } catch {} }
     ws = null;
     playHead = 0;
@@ -560,8 +562,7 @@ export function initChat({ show, back, openCall, openClass }) {
   }
 
   function openClassCall(u, unitId) {
-    openChat(u);
-    startCall(unitId);
+    startCall(unitId, u);
   }
 
   // ── 通话 ─────────────────────────────────────────────────────────────
@@ -589,24 +590,28 @@ export function initChat({ show, back, openCall, openClass }) {
     ringback = null;
   }
 
-  function startCall(classUnit = null) {
-    if (!unit || mode !== "text" || ws) return;
+  function startCall(classUnit = null, person = null) {
+    const who = person || unit;
+    if (!who || mode !== "text" || ws) return;
     ensureAudio();
     startRingback();
     mode = "call";
     callRec = {
       id: `c_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-      unit: classUnit || unit.id,
-      chatUnit: unit.id,
+      unit: classUnit || who.id,
+      chatUnit: who.id,
       practice: !!classUnit,
-      name: unit.name,
-      avatar: unit.avatar,
+      name: who.name,
+      avatar: who.avatar,
       start: Date.now(),
       connected: false,
       turns: [],
     };
     callBox.hidden = false;
-    callName.textContent = classUnit ? `${unit.name} · Class` : unit.name;
+    callAvImg.src = who.avatar;
+    callAvImg.style.removeProperty("--fx");
+    callAv.style.removeProperty("--av");
+    callName.textContent = classUnit ? `${who.name} · Class` : who.name;
     callSaid.textContent = "";
     setCallState("Connecting…");
     enableMic();
@@ -629,16 +634,21 @@ export function initChat({ show, back, openCall, openClass }) {
   function finalizeCall() {
     const rec = callRec;
     callRec = null;
-    if (!rec || !rec.connected) return;
+    if (!rec || !rec.connected) return null;
     rec.dur = Math.max(0, Date.now() - rec.start);
     const id = saveCall(rec);
     const text = `${rec.practice ? "Class call" : "Voice call"} · ${fmtDur(rec.dur)}`;
-    if (!rec.chatUnit?.startsWith("persona-")) return;
+    if (rec.practice) openCall?.(id);
+    if (!rec.chatUnit?.startsWith("persona-")) return id;
     fetch("/transcript", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ unit: rec.chatUnit, turns: rec.turns, call: { id, text } }),
-    }).then(() => poll()).catch(() => {});
+      body: JSON.stringify({
+        unit: rec.chatUnit, turns: rec.turns, practice: rec.practice,
+        call: { id, text },
+      }),
+    }).then(() => { if (!rec.practice) poll(); }).catch(() => {});
+    return id;
   }
 
   function addCallLine(item) {
@@ -673,21 +683,31 @@ export function initChat({ show, back, openCall, openClass }) {
   }
 
   function abortCall(u, msg) {
-    if (u !== unit) return;
+    if (!callRec || u !== callRec.chatUnit) return;
+    const practice = callRec.practice;
+    const connected = callRec.connected;
     stopMic();
     stopPlayback();
     stopRingback();
     mode = "text";
-    callBox.hidden = true;
-    callSaid.textContent = "";
     flushPending();
     finalizeCall();
-    setChatState(msg);
-    if (ws) { try { ws.close(); } catch {} }
+    if (practice && !connected) {
+      callBox.hidden = false;
+      setCallState("Call failed");
+      callSaid.textContent = msg;
+    } else {
+      callBox.hidden = true;
+      callSaid.textContent = "";
+      setChatState(msg);
+    }
+    const sock = ws;
+    ws = null;
+    if (sock) { try { sock.close(); } catch {} }
   }
 
   async function connect() {
-    const u = unit;
+    const u = callRec?.chatUnit;
     if (!u) return;
     const seq = ++connectSeq;
     const practice = callRec.practice;
@@ -709,29 +729,31 @@ export function initChat({ show, back, openCall, openClass }) {
       } catch (e) {
         setChatState("Connecting… (retrying)");
         await new Promise((r) => setTimeout(r, 500));
-        if (seq !== connectSeq || unit !== u || mode !== "call") return;
+        if (seq !== connectSeq || callRec?.chatUnit !== u || mode !== "call") return;
         token = await grabToken();
       }
     } catch (e) {
-      if (seq !== connectSeq || unit !== u) return;
+      if (seq !== connectSeq || callRec?.chatUnit !== u) return;
       const why = [e.message, e.name && e.name !== "Error" ? `(${e.name})` : "",
         e.cause ? `[${e.cause}]` : ""].filter(Boolean).join(" ");
       abortCall(u, `Can't start a call: ${why}`);
       return;
     }
-    if (seq !== connectSeq || unit !== u || mode !== "call") return;
+    if (seq !== connectSeq || callRec?.chatUnit !== u || mode !== "call") return;
 
     const sock = new WebSocket(`${WS_BASE}?access_token=${token}`);
     sock.binaryType = "arraybuffer";
     ws = sock;
     sock.onopen = () => sock.send(JSON.stringify({ setup: { model: "models/gemini-3.8-live" } }));
     sock.onmessage = (e) => { if (ws === sock) onMessage(e); };
-    sock.onerror = () => { if (ws === sock && unit === u) abortCall(u, "Connection error"); };
+    sock.onerror = () => { if (ws === sock && callRec?.chatUnit === u) abortCall(u, "Connection error"); };
     sock.onclose = () => { if (ws === sock) onClose(u); };
   }
 
   function onClose(u) {
-    if (unit !== u) return;
+    const active = !!callRec && u === callRec.chatUnit;
+    const practice = active && callRec.practice;
+    const connected = active && callRec.connected;
     stopMic();
     stopPlayback();
     stopRingback();
@@ -741,10 +763,15 @@ export function initChat({ show, back, openCall, openClass }) {
     mode = "text";
     callBox.hidden = true;
     callSaid.textContent = "";
-    if (wasCall) finalizeCall();
+    if (active && wasCall) finalizeCall();
     showStatus();
-    if (wasCall) setChatState("Call dropped");
-    poll();
+    if (active && wasCall) setChatState("Call dropped");
+    if (practice && wasCall && !connected) {
+      callBox.hidden = false;
+      setCallState("Call dropped");
+      callSaid.textContent = "Voice connection closed before it started.";
+    }
+    if (!practice) poll();
   }
 
   function mergeChunk(buf, line) {

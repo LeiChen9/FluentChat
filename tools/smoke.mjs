@@ -89,9 +89,10 @@ class AC {
 }
 globalThis.window = { AudioContext: AC, addEventListener() {} };
 globalThis.Audio = class { constructor() { this.currentTime = 0; } play() { return Promise.resolve(); } pause() {} };
+let lastWs = null;
 globalThis.WebSocket = class {
   static OPEN = 1;
-  constructor() { this.readyState = 1; this.sent = []; }
+  constructor(url) { lastWs = this; this.url = url; this.readyState = 1; this.sent = []; }
   send(s) { this.sent.push(s); }
   close() { this.readyState = 3; this.onclose && this.onclose(); }
 };
@@ -252,10 +253,45 @@ console.log("✓ 详情返回课程列表");
 
 topicRows[0].fire("click");
 await tick(20);
+const fionaBefore = calls.filter((c) => c.url.includes("unit=persona-Fiona")).length;
 els.get("class-topic-call").fire("click");
 await tick(20);
 const classToken = calls.find((c) => c.url === "/token" && c.body?.practice);
 if (!classToken || classToken.body.unit !== "unit-01") throw new Error("class token missing");
-console.log("✓ 详情页圆形通话按钮发起课堂通话");
+if (calls.filter((c) => c.url.includes("unit=persona-Fiona")).length !== fionaBefore) {
+  throw new Error("class call opened Fiona chat");
+}
+console.log("✓ 详情页发起课堂通话，不打开 Fiona 聊天");
+
+lastWs.onopen?.();
+lastWs.onmessage?.({ data: JSON.stringify({ setupComplete: {} }) });
+await tick(10);
+els.get("call-end").fire("click");
+await tick(30);
+if (els.get("view-call").hidden) throw new Error("class call did not land on Calls detail");
+const transcript = calls.find((c) => c.url === "/transcript" && c.body?.practice);
+if (!transcript || transcript.body.unit !== "persona-Fiona") throw new Error("class transcript missing");
+console.log("✓ 课堂通话结束落在 Calls 点评页，转写标记 practice");
+
+els.get("call-back").fire("click");
+await tick(20);
+tabs[0].fire("click");
+await tick(20);
+const leoRow = chatList.children.find((li) => li !== classRow);
+leoRow.children[0].fire("click");
+await tick(30);
+els.get("chat-call").fire("click");
+await tick(20);
+const voiceToken = calls.find((c) => c.url === "/token" && !c.body?.practice);
+if (!voiceToken) throw new Error("normal call token missing");
+lastWs.onopen?.();
+lastWs.onmessage?.({ data: JSON.stringify({ setupComplete: {} }) });
+await tick(10);
+els.get("call-end").fire("click");
+await tick(30);
+if (els.get("view-chat").hidden) throw new Error("normal call left chat");
+const voiceTranscript = calls.find((c) => c.url === "/transcript" && !c.body?.practice);
+if (!voiceTranscript) throw new Error("normal transcript missing");
+console.log("✓ 普通语音通话仍留在聊天页，转写不标 practice");
 console.log("SMOKE PASS");
 process.exit(0);
