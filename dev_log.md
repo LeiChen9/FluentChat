@@ -407,3 +407,10 @@ npx wrangler deploy                  # 改了 site/ 必须部署，workers.dev �
 - 课堂从第五个 tab 改成全屏子页：`view-class` + 返回 Chats，隐藏 tabbar；页面是 Fiona 第一人称介绍 + `Start here` / `For work` 两组主题，去掉 Unit 编号、章节大写头和进度面板。
 - `practice.js` → `class.js`；`/practice/plan` 返回 `intro` + `units`；`prompts/practice_room.md` → `prompts/fiona_class.md`，通话记录文案改为 `Class call`。
 - 验证：`node --check`、`py_compile`、`python3 tools/gen_prompts.py`、`node tools/smoke.mjs` 全 PASS（含课堂打开/返回/发起 `/token(practice)`）。
+
+## 课堂收尾清理（2026-11-14）
+
+- 删掉 `openClassCall` 里重复的 `ensureAudio()`，`startCall` 已统一处理；删掉 `openChat` 对 `callName` 的冗余赋值。
+- `startCall` 形参 `practiceUnit` → `classUnit`，通话记录仍保留 `practice` 字段做协议兼容。
+- 删除旧首页遗留死代码：`site/js/greeting.js`，以及 `hero` / `npc` / `greeting` / `placeholder` / `#view-unit` / `unit` / `chapter` 等约 245 行未引用 CSS。
+- 静态资源版本号 bump 到 `20261114-3`；`node --check` 与 `node tools/smoke.mjs` PASS。

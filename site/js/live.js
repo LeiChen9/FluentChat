@@ -325,7 +325,6 @@ export function initChat({ show, back, openCall, openClass }) {
     callAvImg.style.removeProperty("--fx");
     callAv.style.removeProperty("--av");
     nameEl.textContent = u.name;
-    callName.textContent = u.name;
     callSaid.textContent = "";
     setChatState("…");
     setReady(false);
@@ -562,7 +561,6 @@ export function initChat({ show, back, openCall, openClass }) {
   }
 
   function openClassCall(u, unitId) {
-    ensureAudio();
     openChat(u);
     startCall(unitId);
   }
@@ -592,16 +590,16 @@ export function initChat({ show, back, openCall, openClass }) {
     ringback = null;
   }
 
-  function startCall(practiceUnit = null) {
+  function startCall(classUnit = null) {
     if (!unit || mode !== "text" || ws) return;
     ensureAudio();
     startRingback();
     mode = "call";
     callRec = {
       id: `c_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-      unit: practiceUnit || unit.id,
+      unit: classUnit || unit.id,
       chatUnit: unit.id,
-      practice: !!practiceUnit,
+      practice: !!classUnit,
       name: unit.name,
       avatar: unit.avatar,
       start: Date.now(),
@@ -609,7 +607,7 @@ export function initChat({ show, back, openCall, openClass }) {
       turns: [],
     };
     callBox.hidden = false;
-    callName.textContent = practiceUnit ? `${unit.name} · Class` : unit.name;
+    callName.textContent = classUnit ? `${unit.name} · Class` : unit.name;
     callSaid.textContent = "";
     setCallState("Connecting…");
     enableMic();
