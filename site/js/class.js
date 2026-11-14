@@ -1,15 +1,10 @@
 // Fiona's Class：读 /practice/plan，把 12 个 Unit 当作她课堂里的主题。
+import { el } from "./dom.js?v=1";
+
 const CHAPTERS = {
   survival: { label: "Start here", level: "A2" },
   expression: { label: "For work", level: "B1" },
 };
-
-function el(tag, className, text) {
-  const node = document.createElement(tag);
-  if (className) node.className = className;
-  if (text != null) node.textContent = text;
-  return node;
-}
 
 export function initClass({ back, backTopic, showTopic, call }) {
   const body = document.getElementById("class-body");

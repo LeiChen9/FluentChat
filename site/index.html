@@ -10,7 +10,7 @@
 <title>FluentChat</title>
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="assets/FluentChat.png">
-<link rel="stylesheet" href="css/app.css?v=20261114-11">
+<link rel="stylesheet" href="css/app.css?v=20261114-13">
 </head>
 <body>
 <div class="app">
@@ -87,19 +87,27 @@
 
     <!-- ── 朋友圈：canon + 当前用户 overlay，前端只渲染 /moments ── -->
     <section class="view" id="view-moments" hidden>
-      <header class="page-head">
-        <h1 class="page-title">Moments</h1>
-        <p class="page-sub">See what your friends are up to</p>
+      <header class="moments-bar">
+        <h1 class="moments-bar__title">Moments</h1>
+        <button class="moments-bar__add" id="moment-compose-open" type="button" aria-label="New moment">+</button>
       </header>
-      <form class="moment-compose" id="moment-form">
-        <textarea id="moment-input" rows="2" maxlength="500"
-                  placeholder="Share a moment…" aria-label="Share a moment"></textarea>
-        <div class="moment-compose__foot">
-          <span>Text and a little emoji.</span>
-          <button type="submit" id="moment-send">Post</button>
+      <div class="moments-cover">
+        <div class="moments-cover__me">
+          <b id="moment-me-name">You</b>
+          <img class="moment__av" id="moment-me-av" src="assets/npc-cat.webp" alt="">
         </div>
-      </form>
+      </div>
       <div class="moment-list" id="moment-list"></div>
+
+      <form class="moment-composer" id="moment-form" hidden>
+        <header class="moment-composer__bar">
+          <button type="button" id="moment-compose-cancel">Cancel</button>
+          <b>New moment</b>
+          <button type="submit" id="moment-send">Post</button>
+        </header>
+        <textarea id="moment-input" rows="4" maxlength="500"
+                  placeholder="What's on your mind?" aria-label="Share a moment"></textarea>
+      </form>
     </section>
 
     <!-- ── 对话页：朋友或课堂主题点一个就 push 进这里，像 WhatsApp 单个聊天 ── -->
@@ -291,6 +299,6 @@
   </nav>
 
 </div>
-<script type="module" src="js/app.js?v=20261114-11"></script>
+<script type="module" src="js/app.js?v=20261114-13"></script>
 </body>
 </html>
