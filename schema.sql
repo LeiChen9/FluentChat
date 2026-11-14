@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user TEXT NOT NULL,
   unit TEXT NOT NULL,
-  kind TEXT NOT NULL,          -- reply|burst|proactive|proactive_tick|life_day
+  kind TEXT NOT NULL,          -- reply|burst|proactive|proactive_tick|life_day|moment_*
   state TEXT NOT NULL DEFAULT 'pending',
   due_at INTEGER NOT NULL,
   lease_until INTEGER NOT NULL DEFAULT 0,
@@ -74,6 +74,50 @@ CREATE TABLE IF NOT EXISTS jobs (
 CREATE UNIQUE INDEX IF NOT EXISTS ux_jobs_dedupe ON jobs(dedupe_key);
 CREATE INDEX IF NOT EXISTS ix_jobs_due ON jobs(state, due_at);
 CREATE INDEX IF NOT EXISTS ix_jobs_owner ON jobs(user, unit, kind, state);
+
+-- 朋友圈：canon 全局共享，user/echo 按账户隔离。
+CREATE TABLE IF NOT EXISTS moment_posts (
+  id TEXT PRIMARY KEY,
+  scope TEXT NOT NULL CHECK (scope IN ('canon', 'echo', 'user')),
+  user TEXT NOT NULL DEFAULT '',
+  unit TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'life',
+  text TEXT NOT NULL,
+  published_at INTEGER NOT NULL,
+  arc_id TEXT,
+  beat INTEGER,
+  meta TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS ix_moment_feed ON moment_posts(scope, published_at);
+CREATE INDEX IF NOT EXISTS ix_moment_user ON moment_posts(user, published_at);
+
+-- 点赞与评论：canon 动态的 reaction 也按 user 隔离。
+CREATE TABLE IF NOT EXISTS moment_reactions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  moment_id TEXT NOT NULL,
+  user TEXT NOT NULL,
+  actor TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('like', 'comment')),
+  text TEXT,
+  parent_id INTEGER,
+  created_at INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_moment_like
+  ON moment_reactions(moment_id, user, actor) WHERE kind='like';
+CREATE INDEX IF NOT EXISTS ix_moment_reactions
+  ON moment_reactions(moment_id, user, created_at);
+
+-- 隐藏亲近感与 NPC 反应冷却。
+CREATE TABLE IF NOT EXISTS moment_relationship (
+  user TEXT NOT NULL,
+  unit TEXT NOT NULL,
+  closeness REAL NOT NULL DEFAULT 0.1,
+  last_echo_at INTEGER NOT NULL DEFAULT 0,
+  last_comment_at INTEGER NOT NULL DEFAULT 0,
+  weekly_comments INTEGER NOT NULL DEFAULT 0,
+  week_start TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (user, unit)
+);
 
 -- 调度心跳：让「清扫没跑」可见，而不是静默卡死。
 CREATE TABLE IF NOT EXISTS cron_health (

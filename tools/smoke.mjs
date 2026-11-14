@@ -51,11 +51,12 @@ function mkEl(id = "", tag = "div") {
       const walk = (el) => { for (const c of el.children) { if (match(c, sel)) out.push(c); walk(c); } };
       walk(this); return out;
     },
+    focus() {},
     scrollHeight: 0, scrollTop: 0, clientHeight: 0,
   };
   return e;
 }
-for (const i of ["chat-list","moment-list","chat-name","chat-state","chat-av",
+for (const i of ["chat-list","moment-list","moment-form","moment-input","moment-send","chat-name","chat-state","chat-av",
   "chat-body","chat-bar","chat-input","chat-send","chat-back","chat-call","chat-reset",
   "call","call-av","call-name","call-state","call-said","call-end",
   "call-back","call-list","call-detail-name","call-detail-meta","call-detail-body",
@@ -101,6 +102,7 @@ if (!globalThis.crypto?.randomUUID) Object.defineProperty(globalThis, "crypto", 
 globalThis.confirm = () => true;
 
 const now = Date.now();
+const userPosts = [];
 let leoStatus = "active";
 let cursor = 2;
 const calls = [];
@@ -117,7 +119,7 @@ const text = (s) => ({ ok: true, status: 200, text: async () => s });
 
 globalThis.fetch = async (url, opts) => {
   const u = String(url);
-  calls.push({ url: u, body: opts?.body ? JSON.parse(opts.body) : null });
+  calls.push({ url: u, method: opts?.method || "GET", body: opts?.body ? JSON.parse(opts.body) : null });
   if (u.includes("assets/contacts")) {
     return u.includes("contact.json")
       ? json({ name: "Leo", status: "", preview: "", time: "", avatar: "a.png",
@@ -126,6 +128,30 @@ globalThis.fetch = async (url, opts) => {
   }
   if (u === "/me" || u === "/profile") return json({ user: "riceball" });
   if (u === "/ping" || u === "/away" || u === "/seen" || u === "/reset" || u === "/transcript" || u === "/prefs") return json({ ok: true });
+  if (u === "/moments" && (opts?.method || "GET") === "POST") {
+    const body = JSON.parse(opts.body);
+    userPosts.unshift({ id: `user:${userPosts.length + 1}`, scope: "user", unit: "me",
+      kind: "user", text: body.text, published_at: now, reactions: [], liked: false });
+    return json({ moment: userPosts[0] });
+  }
+  if (u === "/moments") return json({ viewer: { name: "riceball", avatar: "me.png" }, moments: [
+    ...userPosts,
+    { id: "canon:persona-leo:seed-1", scope: "canon", unit: "persona-leo",
+      kind: "life", text: "Runner-up today!", published_at: now - 2 * 86400000,
+      liked: false, reactions: [
+        { id: 1, actor: "persona-leo", kind: "like", text: null, created_at: now - 3600000 },
+        { id: 2, actor: "persona-chole", kind: "comment", text: "what beans?", parent_id: null, created_at: now - 1800000 },
+      ] },
+    { id: "canon:persona-chole:seed-1", scope: "canon", unit: "persona-chole",
+      kind: "life", text: "Found a shopping list.", published_at: now - 4 * 86400000,
+      liked: false, reactions: [] },
+  ] });
+  if (u.includes("/moments/") && u.endsWith("/like")) return json({ liked: true });
+  if (u.includes("/moments/") && u.endsWith("/comment")) {
+    const body = JSON.parse(opts.body);
+    return json({ comment: { id: 9, actor: "me", kind: "comment", text: body.text,
+      parent_id: null, created_at: now } });
+  }
   if (u === "/conversations") {
     return json({ conversations: [
       { unit: "persona-leo", status: leoStatus, wake_at: 0, unread: 0, last: initial[1], typing: false },
@@ -209,6 +235,38 @@ const classRow = chatList.children.find((li) => String(li.children[0]?.className
 if (!classRow) throw new Error("Fiona's Class row missing");
 if (!calls.some((c) => c.url === "/ping")) throw new Error("boot did not ping presence");
 console.log("✓ 列表渲染 5 行（含 Fiona's Class），boot 已 ping");
+
+tabs[2].fire("click");
+await tick(30);
+if (els.get("view-moments").hidden) throw new Error("moments tab did not open");
+const momentList = els.get("moment-list");
+if (momentList.children.length !== 2) throw new Error(`moments: ${momentList.children.length}`);
+if (momentList.children[0].children[1].children[1].textContent !== "Runner-up today!") {
+  throw new Error("moment text missing");
+}
+console.log("✓ Moments 拉 /moments 并渲染 2 条");
+
+els.get("moment-input").value = "A small thing";
+els.get("moment-form").fire("submit");
+await tick(30);
+if (!calls.some((c) => c.url === "/moments" && c.method === "POST")) throw new Error("moment post missing");
+if (momentList.children.length !== 3) throw new Error(`moment post render: ${momentList.children.length}`);
+console.log("✓ 发 Moment 后 feed 增加一条");
+
+const first = momentList.children[0];
+first.querySelectorAll(".moment__like")[0].fire("click");
+await tick(20);
+if (!calls.some((c) => c.url.includes("/like") && c.method === "POST")) throw new Error("like missing");
+first.querySelectorAll(".moment__act")[0].fire("click");
+const reply = first.querySelectorAll(".moment__reply")[0];
+if (reply.hidden) throw new Error("reply form did not open");
+reply.querySelectorAll(".moment__reply-input")[0].value = "nice";
+reply.fire("submit");
+await tick(20);
+if (!calls.some((c) => c.url.includes("/comment") && c.method === "POST")) throw new Error("comment missing");
+console.log("✓ 点赞、评论走 POST /moments/:id");
+tabs[0].fire("click");
+await tick(20);
 
 const body = els.get("chat-body");
 chatList.children[0].children[0].fire("click");

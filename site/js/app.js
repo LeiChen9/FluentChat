@@ -1,7 +1,8 @@
-import { initChat, fmtRowTime } from "./live.js?v=20261114-7";
+import { initChat } from "./live.js?v=20261114-7";
 import { loadContacts } from "./personas.js?v=20261114-4";
 import { initCalls } from "./calls.js?v=20261114-6";
 import { initClass } from "./class.js?v=20261114-7";
+import { initMoments } from "./moments.js?v=20261114-2";
 // 四个主 tab + 三个子页（聊天 / 通话详情 / 课堂）。
 const VIEWS = ["chats", "class", "class-topic", "calls", "moments", "me", "chat", "call"];
 
@@ -16,6 +17,7 @@ let current = "chats";
 // initChat 要引用 showView，showView 又要反过来在离开对话页时调它的 close，
 // 所以先给个占位，initChat 跑完再换成真身。两边都是点击时才执行，没影响。
 let leaveChat = () => {};
+const moments = initMoments();
 
 function showView(name) {
   if (current === "chat" && name !== "chat") leaveChat();
@@ -39,6 +41,7 @@ function showView(name) {
   // 每次进 Calls 重画列表（点评可能刚在后台生成完）
   if (name === "calls") calls.refresh();
   if (name === "class") fionaClass.refresh();
+  if (name === "moments") moments.refresh();
   if (name === "chats") chat.refresh();
 }
 
@@ -307,24 +310,6 @@ function openFromPush() {
 function loadPeople() {
   const build = (people) => {
     findPersona = (unit) => people.find((p) => p.id === unit) || null;
-
-    const momentList = document.getElementById("moment-list");
-    momentList.replaceChildren();
-    const moments = people.flatMap((p) => p.moments.map((m) => ({ p, m })))
-      .sort((a, b) => new Date(b.m.timestamp) - new Date(a.m.timestamp));
-    for (const { p, m } of moments) {
-        const card = document.createElement("article");
-        card.className = "moment";
-        card.innerHTML =
-          `<img class="moment__av" src="${p.avatar}" alt="">` +
-          `<div class="moment__body">` +
-          `<b class="moment__name">${p.name}</b>` +
-          `<p class="moment__text"></p>` +
-          `<i class="moment__time">${fmtRowTime(m.timestamp)}</i>` +
-          `</div>`;
-        card.querySelector(".moment__text").textContent = m.text;
-        momentList.append(card);
-    }
   };
 
   // 缓存优先：上次建好的整队人马直接开画，冷启动不再盯着空黑屏

@@ -112,6 +112,7 @@
   3. NPC 反应引擎（0–2 人、延迟、冷却、周上限）。
   4. 全局 canon 生成 + 用户 echo + 聊天读 canon。
 - **测试**：feed 合并/窗口/隔离；用户 A 的评论和 echo 不出现在 B；反应预算与冷却；canon 零用户提及；echo 无夸奖；reaction 无 generic praise；smoke 覆盖发帖、点赞、评论、NPC 回复、空状态。
+- **实现状态（2026-11-14）**：用户发帖/点赞/评论、NPC 反应、canon/echo job、聊天读 canon 已接；图片仍不做。
 
 ## Web Push（iOS 主屏幕 Web App）
 

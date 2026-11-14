@@ -8,12 +8,12 @@ call, no push. The phone is a renderer, not a timing source."""
 import json
 import random
 import re
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from workers import Response, WorkerEntrypoint, fetch as js_fetch
 from workers import wait_until
 from workers.asgi import run_in_background
-from backend import auth, cloud_npc, convo, life
+from backend import auth, cloud_npc, convo, life, moments
 from backend.common import (ENDPOINTS, _load_subs, _save_subs,
                             bind_worker_env, env_key, run_chain, vapid_pubkey)
 from backend.prompt_data import PROMPTS
@@ -26,10 +26,10 @@ from backend.config import (AUTH_TOKENS_URL, HEAVY_USERS_PER_TICK,
 
 def to_messages(unit: str, history: list[dict], tz_offset: int = DEFAULT_TZ_OFFSET,
                 life_state: dict | None = None,
-                contact: dict | None = None) -> list[dict]:
+                contact: dict | None = None, canon: str = "") -> list[dict]:
     """NPC only: persona prompt + life + time sense; history as user/assistant."""
     ctx = build_time_context(history, tz_offset)
-    sys_text = (_persona_system(unit, tz_offset, ctx['header'], life_state, contact)
+    sys_text = (_persona_system(unit, tz_offset, ctx['header'], life_state, contact, canon)
                 + "\n\n" + read_prompt('chat_json'))
     msgs = [{"role": "system", "content": sys_text}]
     if not history:
@@ -47,11 +47,14 @@ def read_prompt(name: str) -> str:
 
 
 def _persona_system(unit: str, tz_offset: int, header: str,
-                    life_state: dict | None, contact: dict | None) -> str:
+                    life_state: dict | None, contact: dict | None,
+                    canon: str = "") -> str:
     blocks = [read_prompt('text_style'), read_prompt(unit)]
     if life_state is not None:
         blocks.append(life.render(life_state, contact or {},
                                   cloud_npc.now_ms(), tz_offset))
+    if canon:
+        blocks.append(canon)
     blocks.append(header)
     return "\n\n".join(blocks)
 
@@ -244,13 +247,13 @@ def build_system_instruction(
     unit: str, history: list[dict] | None = None,
     tz_offset: int = DEFAULT_TZ_OFFSET,
     life_state: dict | None = None, contact: dict | None = None,
-    practice: bool = False,
+    practice: bool = False, canon: str = "",
 ) -> str:
     history = history or []
     base_name = "base-ch2.md" if unit in ("unit-07", "unit-08", "unit-09", "unit-10", "unit-11", "unit-12") else "base.md"
     if unit in PERSONAS:
         ctx = build_time_context(history, tz_offset)
-        text = _persona_system(unit, tz_offset, ctx['header'], life_state, contact)
+        text = _persona_system(unit, tz_offset, ctx['header'], life_state, contact, canon)
         dated = ctx["history"]
     else:
         parts = [read_prompt(base_name)]
@@ -290,7 +293,7 @@ def build_token_payload(
     unit: str, history: list[dict] | None = None,
     tz_offset: int = DEFAULT_TZ_OFFSET,
     life_state: dict | None = None, contact: dict | None = None,
-    practice: bool = False, voice: str | None = None,
+    practice: bool = False, voice: str | None = None, canon: str = "",
 ) -> dict:
     return {
         "uses": 1,
@@ -299,7 +302,7 @@ def build_token_payload(
             "systemInstruction": {
                 "parts": [
                     {"text": build_system_instruction(unit, history, tz_offset,
-                                                      life_state, contact, practice)}
+                                                      life_state, contact, practice, canon)}
                 ]
             },
             "generationConfig": {
@@ -451,8 +454,93 @@ class Default(WorkerEntrypoint):
                 ]
             })
 
+        if request.method == "GET" and path.endswith("/moments"):
+            if not user:
+                return Response.json({"error": "请先登录"}, status=401)
+            try:
+                before = int(query.get("before") or 0)
+            except ValueError:
+                before = 0
+            try:
+                limit = int(query.get("limit") or moments.DEFAULT_LIMIT)
+            except ValueError:
+                limit = moments.DEFAULT_LIMIT
+            avatar = ""
+            try:
+                obj = await self.env.DATA.get(f"{user}/avatar.txt")
+                avatar = (await obj.text()) if obj is not None else ""
+            except Exception:
+                avatar = ""
+            return Response.json({
+                "viewer": {"name": user, "avatar": avatar},
+                "moments": await moments.feed(self.env, user, before, limit),
+            })
+
         if not user and request.method != "GET":
             return Response.json({"error": "请先登录"}, status=401)
+
+        if request.method == "POST" and path.endswith("/moments"):
+            try:
+                body = await request.json()
+            except Exception:
+                return Response.json({"error": "请求体不是合法 JSON"}, status=400)
+            post = await moments.create_post(self.env, user, body.get("text"))
+            if post is None:
+                return Response.json({"error": "动态不能为空"}, status=400)
+            now = convo.now_ms()
+            for unit in sorted(PERSONAS):
+                await convo.enqueue(
+                    self.env, user, unit, "moment_react",
+                    now + moments.reaction_delay_ms(unit),
+                    f"mreact:{post['id']}:{unit}", {"moment_id": post["id"]}, now)
+            return Response.json({"moment": post})
+
+        if request.method == "POST" and path.startswith("/moments/"):
+            parts = [p for p in path.split("/") if p]
+            moment_id = unquote(parts[-2]) if len(parts) >= 2 else ""
+            action = parts[-1] if parts else ""
+            if not moment_id:
+                return Response.json({"error": "moment id 缺失"}, status=400)
+            if action == "like":
+                liked = await moments.toggle_like(self.env, user, moment_id)
+                if liked is None:
+                    return Response.json({"error": "动态不存在"}, status=404)
+                return Response.json({"liked": liked})
+            if action == "comment":
+                try:
+                    body = await request.json()
+                except Exception:
+                    return Response.json({"error": "请求体不是合法 JSON"}, status=400)
+                parent = body.get("parent_id")
+                try:
+                    parent_id = int(parent) if parent is not None else None
+                except (TypeError, ValueError):
+                    parent_id = None
+                comment = await moments.add_comment(
+                    self.env, user, moment_id, body.get("text"), parent_id)
+                if comment is None:
+                    return Response.json({"error": "评论不能为空"}, status=400)
+                post = await moments.visible_post(self.env, moment_id, user)
+                unit = post["unit"] if post else None
+                if unit not in PERSONAS and parent_id:
+                    parent_row = await self.env.DB.prepare(
+                        "SELECT actor FROM moment_reactions WHERE id=? AND moment_id=? AND user=?"
+                    ).bind(parent_id, moment_id, user).first()
+                    actor = parent_row["actor"] if parent_row else None
+                    if actor in PERSONAS:
+                        unit = actor
+                if unit in PERSONAS:
+                    now = convo.now_ms()
+                    await convo.enqueue(
+                        self.env, user, unit, "moment_reply",
+                        now + moments.reaction_delay_ms(unit),
+                        f"mreply:{comment['id']}", {
+                            "moment_id": moment_id,
+                            "parent_id": comment["id"],
+                            "text": comment["text"],
+                        }, now)
+                return Response.json({"comment": comment})
+            return Response.json({"error": "未知的 moment 操作"}, status=404)
 
         # ── message chain ────────────────────────────────────────────────
         if request.method == "POST" and path.endswith("/messages"):
@@ -569,6 +657,7 @@ class Default(WorkerEntrypoint):
             if not practice and cid and call.get("text"):
                 await convo.append(self.env, user, unit, "me", str(call["text"])[:120],
                                    now, kind="call", client_id=cid)
+            await moments.schedule_echo(self.env, user, unit, now)
             return Response.json({"ok": True})
 
         if request.method == "POST" and path.endswith("/reset"):
@@ -625,7 +714,9 @@ class Default(WorkerEntrypoint):
                              "Content-Type": "application/json"},
                     body=json.dumps(build_token_payload(
                         unit, history, tz_offset, life_state, contact, practice,
-                        VOICE_BY_ID["persona-Fiona"] if practice else None)),
+                        VOICE_BY_ID["persona-Fiona"] if practice else None,
+                        canon=(await moments.canon_context(self.env, unit)
+                               if unit in PERSONAS else ""))),
                 )
                 if resp.status != 200:
                     detail = await resp.text()
@@ -790,6 +881,11 @@ class Default(WorkerEntrypoint):
         contacts = {}
         for unit in sorted(PERSONAS):
             contacts[unit] = await _contact(env, unit) or {}
+        try:
+            await convo.ensure_job(env, "", "", "moment_canon", "mcanon:global",
+                                   now + 86400_000, now)
+        except Exception as e:
+            print(f"[drain] ensure moment_canon failed: {type(e).__name__}: {str(e)[:120]}")
         for user in users:
             try:
                 tz = int((await convo.prefs(env, user))["tz_offset"])
@@ -822,6 +918,14 @@ class Default(WorkerEntrypoint):
                 await self._proactive_job(env, job)
             elif kind == "life_day":
                 await self._life_job(env, job)
+            elif kind == "moment_react":
+                await self._moment_react_job(env, job)
+            elif kind == "moment_reply":
+                await self._moment_reply_job(env, job)
+            elif kind == "moment_echo":
+                await self._moment_echo_job(env, job)
+            elif kind == "moment_canon":
+                await self._moment_canon_job(env, job)
             else:
                 await self._run_turn_job(env, job)
         except Exception as e:
@@ -869,6 +973,37 @@ class Default(WorkerEntrypoint):
         nxt = life.next_midnight_ms(now, tz) + int(random.random() * 30 * 60_000)
         await convo.reschedule(env, job["id"], nxt, now)
 
+    async def _moment_react_job(self, env, job: dict) -> None:
+        user, unit = job["user"], job["unit"]
+        contact, tz = await self._ctx(env, user, unit)
+        payload = json.loads(job.get("payload") or "{}")
+        moment_id = str(payload.get("moment_id") or "")
+        if contact and moment_id:
+            await moments.react_to_post(env, user, unit, moment_id, contact, tz)
+        await convo.finish(env, job["id"], convo.now_ms())
+
+    async def _moment_reply_job(self, env, job: dict) -> None:
+        user, unit = job["user"], job["unit"]
+        contact, tz = await self._ctx(env, user, unit)
+        payload = json.loads(job.get("payload") or "{}")
+        moment_id = str(payload.get("moment_id") or "")
+        parent_id = int(payload.get("parent_id") or 0)
+        if contact and moment_id and parent_id:
+            await moments.reply_to_comment(
+                env, user, unit, moment_id, parent_id,
+                str(payload.get("text") or ""), contact, tz)
+        await convo.finish(env, job["id"], convo.now_ms())
+
+    async def _moment_echo_job(self, env, job: dict) -> None:
+        await moments.generate_echo(env, job["user"], job["unit"])
+        await convo.finish(env, job["id"], convo.now_ms())
+
+    async def _moment_canon_job(self, env, job: dict) -> None:
+        now = convo.now_ms()
+        made = await moments.generate_canon(env, now)
+        print(f"[moment] canon published={made}")
+        await convo.reschedule(env, job["id"], now + 7 * 86400_000, now)
+
     async def _run_turn_job(self, env, job: dict) -> None:
         now = convo.now_ms()
         user, unit, kind = job["user"], job["unit"], job["kind"]
@@ -888,7 +1023,8 @@ class Default(WorkerEntrypoint):
         try:
             hist = _rows_to_hist(await convo.recent(env, user, unit, 30))
             lif = life.settle(await life.load(env, user, unit), contact, now, tz)
-            msgs = to_messages(unit, hist, tz, lif, contact)
+            canon = await moments.canon_context(env, unit)
+            msgs = to_messages(unit, hist, tz, lif, contact, canon)
             if kind == "proactive":
                 try:
                     unans = int(json.loads(job.get("payload") or "{}").get("unans") or 0)
@@ -915,6 +1051,7 @@ class Default(WorkerEntrypoint):
                             life.apply_chat(lif, parse_chat(out.get("content") or ""), done))
             if kind == "reply":
                 await self._maybe_burst(env, user, unit, contact, job, done)
+                await moments.schedule_echo(env, user, unit, done)
             elif kind == "burst":
                 await self._maybe_burst(env, user, unit, contact, job, done, follow=True)
             await self._push_unit(env, user, unit)

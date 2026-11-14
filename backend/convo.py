@@ -23,7 +23,9 @@ JOB_LEASE_MS = 180_000
 TICK_MS = 300_000
 ENSURE_MS = 600_000
 JOB_MAX_ATTEMPTS = {"reply": 6, "burst": 4, "proactive": 4,
-                    "proactive_tick": 5, "life_day": 4}
+                    "proactive_tick": 5, "life_day": 4,
+                    "moment_canon": 3, "moment_echo": 3,
+                    "moment_react": 3, "moment_reply": 3}
 
 
 def backoff_ms(attempts: int) -> int:
@@ -353,6 +355,12 @@ async def reschedule(env, job_id: int, due_at: int, now: int) -> None:
     await env.DB.prepare(
         "UPDATE jobs SET state='pending', due_at=?, lease_until=0, attempts=0, updated_at=? "
         "WHERE id=?").bind(int(due_at), now, job_id).run()
+
+
+async def finish(env, job_id: int, now: int) -> None:
+    await env.DB.prepare(
+        "UPDATE jobs SET state='done', lease_until=0, updated_at=? WHERE id=?"
+    ).bind(now, job_id).run()
 
 
 async def recover(env, now: int) -> None:

@@ -10,7 +10,7 @@
 <title>FluentChat</title>
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="assets/FluentChat.png">
-<link rel="stylesheet" href="css/app.css?v=20261114-9">
+<link rel="stylesheet" href="css/app.css?v=20261114-11">
 </head>
 <body>
 <div class="app">
@@ -85,12 +85,20 @@
       <ul class="row-list" id="call-list"></ul>
     </section>
 
-    <!-- ── 朋友圈：好友们的动态信息流（本期静态占位） ── -->
+    <!-- ── 朋友圈：canon + 当前用户 overlay，前端只渲染 /moments ── -->
     <section class="view" id="view-moments" hidden>
       <header class="page-head">
         <h1 class="page-title">Moments</h1>
         <p class="page-sub">See what your friends are up to</p>
       </header>
+      <form class="moment-compose" id="moment-form">
+        <textarea id="moment-input" rows="2" maxlength="500"
+                  placeholder="Share a moment…" aria-label="Share a moment"></textarea>
+        <div class="moment-compose__foot">
+          <span>Text and a little emoji.</span>
+          <button type="submit" id="moment-send">Post</button>
+        </div>
+      </form>
       <div class="moment-list" id="moment-list"></div>
     </section>
 
@@ -283,6 +291,6 @@
   </nav>
 
 </div>
-<script type="module" src="js/app.js?v=20261114-9"></script>
+<script type="module" src="js/app.js?v=20261114-11"></script>
 </body>
 </html>

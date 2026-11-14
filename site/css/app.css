@@ -1237,6 +1237,60 @@ button { font: inherit; color: inherit; }
   padding: 4px 22px 30px;
 }
 
+.moment-empty {
+  margin: 32px 20px;
+  text-align: center;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--ink-3);
+}
+
+.moment-compose {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 4px 22px 14px;
+  padding: 12px 14px;
+  border: 0.5px solid var(--hairline);
+  border-radius: 16px;
+  background: var(--bubble-in);
+}
+
+.moment-compose textarea {
+  width: 100%;
+  min-height: 42px;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  resize: none;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 14.5px;
+  line-height: 1.45;
+}
+.moment-compose textarea::placeholder { color: var(--ink-3); }
+
+.moment-compose__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--ink-3);
+  font-size: 11.5px;
+}
+.moment-compose__foot button {
+  padding: 7px 14px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+}
+.moment-compose__foot button:disabled { opacity: 0.5; }
+
 .moment {
   display: flex;
   gap: 12px;
@@ -1255,12 +1309,34 @@ button { font: inherit; color: inherit; }
   background: var(--glow);
 }
 
+.moment__av--letter {
+  display: grid;
+  place-items: center;
+  color: var(--ink-2);
+  font-size: 16px;
+  font-weight: 700;
+}
+
 .moment__body {
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+.moment__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.moment__meta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
 }
 
 .moment__name {
@@ -1280,6 +1356,87 @@ button { font: inherit; color: inherit; }
   font-size: 11.5px;
   color: var(--ink-3);
 }
+
+.moment__like {
+  padding: 0 2px;
+  border: 0;
+  background: none;
+  color: var(--ink-3);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+.moment__like[aria-pressed="true"] { color: #b3261e; }
+
+.moment__likes {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 12px;
+}
+
+.moment__actions {
+  display: flex;
+  gap: 14px;
+  margin-top: 2px;
+}
+
+.moment__act {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink-2);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.moment__comments {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.moment__comment {
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.moment__comment b {
+  margin-right: 5px;
+  color: var(--ink);
+  font-weight: 650;
+}
+
+.moment__reply {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+.moment__reply[hidden] { display: none; }
+
+.moment__reply-input {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 9px;
+  border: 0.5px solid var(--hairline);
+  border-radius: 10px;
+  outline: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+}
+
+.moment__reply-send {
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+}
+.moment__reply-send:disabled { opacity: 0.5; }
 
 /* ── Calls 页：时长系统行、逐句点评、总评 ── */
 .call-empty {
