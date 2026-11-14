@@ -3,8 +3,8 @@
 // 已读 = POST /seen；通话仍是浏览器直连 Gemini Live，只把转写回传服务端。
 // 音频双向：AI 声音在浏览器直接播（24kHz PCM16），麦克风分片上行（16kHz PCM16）。
 
-import { loadContacts } from "./personas.js?v=20261108-1";
-import { saveCall, fmtDur } from "./calls.js?v=20261025-1";
+import { loadContacts } from "./personas.js?v=20261114-4";
+import { saveCall, fmtDur } from "./calls.js?v=20261114-4";
 
 const WS_BASE =
   "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage." +
@@ -85,7 +85,6 @@ export function initChat({ show, back, openCall, openClass }) {
   const clip = (text) => (text.length > 48 ? text.slice(0, 48) + "…" : text);
   const JUNK = /(?:<no\s*speech>|<silence>|<pause>|\{\s*pause\s*\}|\{\s*beat\s*\}|\{\s*hesitate\s*\}|\{\s*long\s*pause\s*\})/gi;
   const clean = (text) => String(text).replace(JUNK, " ").replace(/\s+/g, " ").trim();
-  const keepLines = (text) => String(text).replace(JUNK, " ").split(/\n+/).map((l) => l.replace(/\s+/g, " ").trim()).filter(Boolean).join("\n");
 
   // ── 列表 ─────────────────────────────────────────────────────────────
   function sortRows() {

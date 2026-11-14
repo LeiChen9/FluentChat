@@ -206,32 +206,6 @@ button { font: inherit; color: inherit; }
   min-height: 0;
 }
 
-/* ── Top bar：左上角品牌，点回首页。对话页有自己的 header，整条藏掉 ── */
-.topbar {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  padding: calc(env(safe-area-inset-top) + 12px) 22px 4px;
-}
-
-.topbar[hidden] { display: none; }
-
-.brand {
-  padding: 2px 0;
-  border: 0;
-  background: none;
-  font-size: 17px;
-  font-weight: 650;
-  letter-spacing: -0.015em;
-  color: var(--ink);
-  cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
-  -webkit-touch-callout: none;
-  transition: opacity 200ms var(--soft);
-}
-
-.brand:active { opacity: .5; }
-
 /* ── Views ── */
 .view {
   position: absolute;
@@ -595,8 +569,6 @@ button { font: inherit; color: inherit; }
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-.review.is-loading .review__text { color: var(--ink-2); }
-
 .chat-bar {
   flex: 0 0 auto;
   display: flex;
@@ -972,20 +944,7 @@ button { font: inherit; color: inherit; }
   text-align: center;
 }
 
-/* Contacts 状态点：active/away/busy/offline → 绿/黄/红/灰 */
-.row__status {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-}
-
-.row__status .dot {
-  width: 8px;
-  height: 8px;
-  flex: none;
-  border-radius: 50%;
-}
-
+/* 状态点：active/away/busy/offline → 绿/黄/红/灰 */
 .dot--active { background: #34c759; }
 .dot--away { background: #f2b45a; }
 .dot--busy { background: #ff5f57; }

@@ -149,9 +149,6 @@ async def _auth_route(fn, request) -> Response:
         return Response.json({"error": e.detail}, status=e.status)
 
 
-_SAFE_UNIT = re.compile(r"[A-Za-z0-9_-]{1,64}$")
-
-
 def sanitize_history(raw) -> list[dict]:
     if not isinstance(raw, list):
         return []

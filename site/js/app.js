@@ -1,6 +1,6 @@
-import { initChat, fmtRowTime } from "./live.js?v=20261114-3";
-import { loadContacts } from "./personas.js?v=20261108-1";
-import { initCalls } from "./calls.js?v=20261025-1";
+import { initChat, fmtRowTime } from "./live.js?v=20261114-4";
+import { loadContacts } from "./personas.js?v=20261114-4";
+import { initCalls } from "./calls.js?v=20261114-4";
 import { initClass } from "./class.js?v=20261114-1";
 // 四个主 tab + 三个子页（聊天 / 通话详情 / 课堂）。
 const VIEWS = ["chats", "class", "calls", "moments", "me", "chat", "call"];

@@ -53,7 +53,7 @@ export function saveCall(rec) {
 }
 
 // 失败重试。
-export function retryReview(id) {
+function retryReview(id) {
   const rec = load().find((r) => r.id === id);
   if (rec) runReview(rec);
 }

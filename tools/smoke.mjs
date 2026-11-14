@@ -55,7 +55,7 @@ function mkEl(id = "", tag = "div") {
   };
   return e;
 }
-for (const i of ["chat-list","contact-list","moment-list","chat-name","chat-state","chat-av",
+for (const i of ["chat-list","moment-list","chat-name","chat-state","chat-av",
   "chat-body","chat-bar","chat-input","chat-send","chat-back","chat-call","chat-reset",
   "call","call-av","call-name","call-state","call-said","call-end",
   "call-back","call-list","call-detail-name","call-detail-meta","call-detail-body",
