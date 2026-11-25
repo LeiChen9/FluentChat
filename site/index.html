@@ -10,7 +10,7 @@
 <title>FluentChat</title>
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="assets/FluentChat.png">
-<link rel="stylesheet" href="css/app.css?v=20261125-7">
+<link rel="stylesheet" href="css/app.css?v=20261125-13">
 </head>
 <body>
 <div class="app">
@@ -174,51 +174,70 @@
       <div class="chat-body" id="call-detail-body"></div>
     </section>
 
-    <!-- ── Me：设置与通知 ── -->
+    <!-- ── Me：头像区 + 用量 / 订阅 / 设置 三张统一分组卡片 ── -->
     <section class="view view--center" id="view-me" hidden>
       <header class="page-head">
         <h1 class="page-title">Me</h1>
-        <p class="page-sub">Profile &amp; notifications</p>
       </header>
-      <ul class="row-list">
-        <li>
-          <button class="row" id="profile-row" type="button">
-            <span class="avatar" id="me-avatar"><img src="" alt="" hidden></span>
-            <span class="row__text"><b id="me-user">…</b><i>Tap the avatar to change it</i></span>
-            <input type="file" id="avatar-file" accept="image/*" hidden>
-          </button>
-        </li>
-        <li>
-          <button class="row" id="push-enable" type="button">
-            <span class="row__icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" width="26" height="26" fill="none">
-                <path d="M12 3.5c-3 0-4.9 2.2-4.9 5v3.2c0 .6-.2 1.2-.6 1.7l-.8 1.1c-.6.8 0 2 .9 2h10.8c1 0 1.5-1.2.9-2l-.8-1.1c-.4-.5-.6-1.1-.6-1.7V8.5c0-2.8-1.9-5-4.9-5Z" fill="currentColor"/>
-                <path d="M10 18.6a2.1 2.1 0 0 0 4 0" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
-              </svg>
-            </span>
-            <span class="row__text"><b>Notifications</b><i id="push-note">Off — tap to enable lock-screen push</i></span>
-            <svg class="row__chev" viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M9.5 5.5 16 12l-6.5 6.5" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+
+      <!-- 头像区：无卡片，直接铺在背景上 -->
+      <div class="me-profile">
+        <span class="avatar me-avatar" id="me-avatar"><img src="" alt="" hidden></span>
+        <span class="me-profile__id">
+          <b id="me-user">…</b>
+          <i>Learning English with Leo &amp; friends</i>
+        </span>
+        <input type="file" id="avatar-file" accept="image/*" hidden>
+      </div>
+
+      <!-- 用量 -->
+      <div class="me-group">
+        <div class="me-stats">
+          <div class="me-stat"><b id="stat-msgs">—</b><i>Messages</i></div>
+          <div class="me-stat"><b id="stat-calls">—</b><i>Calls</i></div>
+          <div class="me-stat"><b id="stat-voice">—</b><i>Voice</i></div>
+        </div>
+      </div>
+
+      <!-- 设置：通知 + 退出，统一行样式 -->
+      <div class="me-group">
+        <button class="me-row" id="push-enable" type="button">
+          <span class="me-row__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none">
+              <path d="M12 3.5c-3 0-4.9 2.2-4.9 5v3.2c0 .6-.2 1.2-.6 1.7l-.8 1.1c-.6.8 0 2 .9 2h10.8c1 0 1.5-1.2.9-2l-.8-1.1c-.4-.5-.6-1.1-.6-1.7V8.5c0-2.8-1.9-5-4.9-5Z" fill="currentColor"/>
+              <path d="M10 18.6a2.1 2.1 0 0 0 4 0" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
             </svg>
-          </button>
-        </li>
-      </ul>
+          </span>
+          <span class="me-row__text"><b>Notifications</b><i id="push-note">Off — tap to enable lock-screen push</i></span>
+          <svg class="me-row__chev" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M9.5 5.5 16 12l-6.5 6.5" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+        <button class="me-row" id="logout-row" type="button">
+          <span class="me-row__icon me-row__icon--warn" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none">
+              <path d="M14.5 8.5a4 4 0 0 0 0 7M4 12h10M10 8.5 6.5 12l3.5 3.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" fill="none"/>
+            </svg>
+          </span>
+          <span class="me-row__text"><b>Sign out</b><i>End this device's session</i></span>
+        </button>
+      </div>
+
+      <!-- 订阅 -->
+      <div class="me-group me-sub">
+        <div class="me-sub__top">
+          <b class="me-sub__name">FluentChat Plus</b>
+          <span class="me-sub__badge" id="sub-status">Free</span>
+        </div>
+        <p class="me-sub__line" id="sub-line">Voice calls are capped each month. Upgrade for 90 minutes and unlimited text.</p>
+        <div class="me-quota" aria-hidden="true"><div class="me-quota__fill" id="quota-fill"></div></div>
+        <button class="me-sub__cta" id="sub-cta" type="button">Get Plus — ¥29.9 / month</button>
+      </div>
+
       <div class="me-block">
         <pre class="me-err" id="push-err" hidden></pre>
         <pre class="me-err" id="profile-err" hidden></pre>
       </div>
-      <ul class="row-list">
-        <li>
-          <button class="row" id="logout-row" type="button">
-            <span class="row__icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" width="26" height="26" fill="none">
-                <path d="M14.5 8.5a4 4 0 0 0 0 7M4 12h10M10 8.5 6.5 12l3.5 3.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" fill="none"/>
-              </svg>
-            </span>
-            <span class="row__text"><b>Sign out</b><i>End this device's session</i></span>
-          </button>
-        </li>
-      </ul>
     </section>
 
     <!-- 通知偏好（仿 iOS 消息通知预览三档）。横幅要真的弹，前提是本机
@@ -309,6 +328,6 @@
   </nav>
 
 </div>
-<script type="module" src="js/app.js?v=20261125-8"></script>
+<script type="module" src="js/app.js?v=20261125-13"></script>
 </body>
 </html>

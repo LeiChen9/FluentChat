@@ -650,13 +650,15 @@ class Default(WorkerEntrypoint):
                 return Response.json({"error": "unit 非法"}, status=400)
             now = convo.now_ms()
             cid = str(call.get("id") or "")
+            dur = int(call.get("dur") or 0)
             for i, t in enumerate(turns):
                 await convo.append(self.env, user, unit, t["who"], t["text"], now + i,
                                    kind="transcript", hidden=1,
                                    client_id=f"{cid}:t{i}" if cid else None)
-            if not practice and cid and call.get("text"):
+            if cid and call.get("text"):
                 await convo.append(self.env, user, unit, "me", str(call["text"])[:120],
-                                   now, kind="call", client_id=cid)
+                                   now, kind="call", client_id=cid, dur=dur,
+                                   hidden=1 if practice else 0)
             await moments.schedule_echo(self.env, user, unit, now)
             return Response.json({"ok": True})
 
@@ -695,6 +697,12 @@ class Default(WorkerEntrypoint):
             practice = bool(body.get("practice"))
             if practice and unit not in UNITS:
                 return Response.json({"error": "class 只收 unit-XX"}, status=400)
+            if user:
+                q = await convo.stats(self.env, user)
+                if q["voice"] >= q["cap"]:
+                    return Response.json(
+                        {"error": "本月的通话额度已用完，升级 Plus 可继续", "upgrade": True},
+                        status=403)
             tz_offset = clamp_tz(body.get("tz"))
             if unit in PERSONAS:
                 await convo.set_tz(self.env, user, tz_offset)
@@ -755,6 +763,21 @@ class Default(WorkerEntrypoint):
             return Response.json(review)
 
         # ── profile ──────────────────────────────────────────────────────
+        if request.method == "GET" and path.endswith("/me/stats"):
+            if not user:
+                return Response.json({"error": "请先登录"}, status=401)
+            return Response.json(await convo.stats(self.env, user))
+
+        if request.method == "POST" and path.endswith("/me/plan"):
+            if not user:
+                return Response.json({"error": "请先登录"}, status=401)
+            try:
+                body = await request.json()
+            except Exception:
+                return Response.json({"error": "请求体不是合法 JSON"}, status=400)
+            plan = await convo.set_plan(self.env, user, str(body.get("plan") or "free"))
+            return Response.json({"plan": plan, "cap": convo.CAP_MIN[plan] * 60})
+
         if request.method == "GET" and path.endswith("/profile"):
             if not user:
                 return Response.json({"error": "请先登录"}, status=401)

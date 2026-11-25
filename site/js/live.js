@@ -646,7 +646,7 @@ export function initChat({ show, back, openCall, openClass }) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         unit: rec.chatUnit, turns: rec.turns, practice: rec.practice,
-        call: { id, text },
+        call: { id, text, dur: rec.dur },
       }),
     }).then(() => { if (!rec.practice) poll(); }).catch(() => {});
     return id;

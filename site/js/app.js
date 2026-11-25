@@ -1,4 +1,4 @@
-import { initChat } from "./live.js?v=20261125-1";
+import { initChat } from "./live.js?v=20261125-2";
 import { loadContacts } from "./personas.js?v=20261114-5";
 import { initCalls } from "./calls.js?v=20261114-6";
 import { initClass } from "./class.js?v=20261114-8";
@@ -43,6 +43,7 @@ function showView(name) {
   if (name === "calls") calls.refresh();
   if (name === "class") fionaClass.refresh();
   if (name === "moments") moments.refresh();
+  if (name === "me") paintStats();
   if (name === "chats") chat.refresh();
 }
 
@@ -123,6 +124,7 @@ async function boot() {
   const status = await me();
   const user = status.user || await showAuth(); // 登录/注册成了才会接资料和云镜
   paintProfile(status.user);
+  paintStats();
   startHeartbeat();
   chat.refresh();
 }
@@ -170,6 +172,26 @@ function paintProfile(name) {
     const av = document.querySelector("#me-avatar img");
     if (d.avatar) { av.src = d.avatar; av.hidden = false; }
   }).catch(() => {});
+}
+
+// Me 页数据卡：本月消息/通话/语音来自 /me/stats；额度条随 plan 走
+async function paintStats() {
+  try {
+    const d = await (await fetch("/me/stats")).json();
+    if (d.error) return;
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    const min = Math.round((d.voice || 0) / 60);
+    const cap = d.cap || 1800;
+    set("stat-msgs", d.messages ?? "—");
+    set("stat-calls", d.calls ?? "—");
+    set("stat-voice", `${min}m`);
+    set("sub-status", d.plan === "plus" ? "Plus" : "Free");
+    set("sub-line", `${min} / ${Math.round(cap / 60)} min of calls used this month.`);
+    const fill = document.getElementById("quota-fill");
+    if (fill) fill.style.width = `${Math.min(100, Math.round(((d.voice || 0) / cap) * 100))}%`;
+    const cta = document.getElementById("sub-cta");
+    if (cta) cta.textContent = d.plan === "plus" ? "Cancel Plus" : "Get Plus — ¥29.9 / month";
+  } catch {}
 }
 
 async function setupProfileUI() {
@@ -290,6 +312,15 @@ initPullRefresh(document.getElementById("view-chats"), async () => {
 });
 boot().then(maybeShowIntro).then(openFromPush);
 setupProfileUI();
+
+document.getElementById("sub-cta")?.addEventListener("click", async () => {
+  const plus = document.getElementById("sub-status").textContent === "Plus";
+  const r = await fetch("/me/plan", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ plan: plus ? "free" : "plus" }),
+  }).then((x) => x.json()).catch(() => null);
+  if (r && r.plan) paintStats();
+});
 
 // 冷启动点通知：SW 带 ?unit= 打开，等联系人就绪后直接进对话
 function openFromPush() {

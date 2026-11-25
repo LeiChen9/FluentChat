@@ -11,7 +11,7 @@ import math
 import random
 import time
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 from backend import cloud_npc, life
 
@@ -155,6 +155,17 @@ async def set_tz(env, user: str, tz: int) -> None:
         "ON CONFLICT(user) DO UPDATE SET tz_offset=excluded.tz_offset").bind(user, tz).run()
 
 
+CAP_MIN = {"free": 30, "plus": 90}
+
+
+async def set_plan(env, user: str, plan: str) -> str:
+    plan = plan if plan in CAP_MIN else "free"
+    await env.DB.prepare(
+        "INSERT INTO prefs(user,plan) VALUES(?,?) "
+        "ON CONFLICT(user) DO UPDATE SET plan=excluded.plan").bind(user, plan).run()
+    return plan
+
+
 async def set_notif(env, user: str, notif: str) -> None:
     await env.DB.prepare(
         "INSERT INTO prefs(user,notif) VALUES(?,?) "
@@ -185,11 +196,12 @@ async def seed_proactive(env, user: str, unit: str, led: dict, eng,
 
 async def append(env, user: str, unit: str, role: str, text: str, t: int,
                  kind: str = "text", client_id: str | None = None,
-                 turn_id: str | None = None, hidden: int = 0) -> tuple[int, bool]:
+                 turn_id: str | None = None, hidden: int = 0,
+                 dur: int = 0) -> tuple[int, bool]:
     row = await env.DB.prepare(
-        "INSERT INTO messages(user,unit,role,kind,text,t,client_id,turn_id,hidden) "
-        "VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(user,unit,client_id) DO NOTHING RETURNING id"
-    ).bind(user, unit, role, kind, text, t, client_id, turn_id, hidden).first()
+        "INSERT INTO messages(user,unit,role,kind,text,dur,t,client_id,turn_id,hidden) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(user,unit,client_id) DO NOTHING RETURNING id"
+    ).bind(user, unit, role, kind, text, dur, t, client_id, turn_id, hidden).first()
     if row is not None:
         return int(row["id"]), True
     if client_id:
@@ -250,6 +262,26 @@ async def unread(env, user: str, unit: str, seen: int) -> int:
 
 async def has_messages(env, user: str) -> bool:
     return await _first(env, "SELECT 1 AS x FROM messages WHERE user=? LIMIT 1", user) is not None
+
+
+async def stats(env, user: str) -> dict:
+    p = await prefs(env, user)
+    plan = p["plan"] if p and p["plan"] in CAP_MIN else "free"
+    off = timedelta(minutes=int(p["tz_offset"]))
+    now = now_ms()
+    local = datetime.fromtimestamp(now / 1000, timezone.utc) - off
+    start = local.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    t0 = int((start + off).timestamp() * 1000)
+    row = await _first(env,
+        "SELECT "
+        "COALESCE(SUM(CASE WHEN role='me' AND kind='text' AND hidden=0 THEN 1 ELSE 0 END),0) AS msgs, "
+        "COALESCE(SUM(CASE WHEN kind='call' THEN 1 ELSE 0 END),0) AS calls, "
+        "COALESCE(SUM(CASE WHEN kind='call' THEN dur ELSE 0 END),0) AS voice "
+        "FROM messages WHERE user=? AND t>=?", user, t0)
+    return {"messages": int(row["msgs"]) if row else 0,
+            "calls": int(row["calls"]) if row else 0,
+            "voice": int(row["voice"] // 1000) if row else 0,
+            "plan": plan, "cap": CAP_MIN[plan] * 60}
 
 
 async def import_messages(env, user: str, unit: str, rows: list[dict],

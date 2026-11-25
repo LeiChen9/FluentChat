@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS messages (
   role TEXT NOT NULL CHECK (role IN ('me', 'ai')),
   kind TEXT NOT NULL DEFAULT 'text',
   text TEXT NOT NULL,
+  dur INTEGER NOT NULL DEFAULT 0,
   t INTEGER NOT NULL,
   client_id TEXT,
   turn_id TEXT,
@@ -49,6 +50,7 @@ CREATE TABLE IF NOT EXISTS devices (
 CREATE TABLE IF NOT EXISTS prefs (
   user TEXT PRIMARY KEY,
   notif TEXT NOT NULL DEFAULT 'preview',
+  plan TEXT NOT NULL DEFAULT 'free',
   tz_offset INTEGER NOT NULL DEFAULT -480,
   migrated INTEGER NOT NULL DEFAULT 0
 );

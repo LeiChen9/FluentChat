@@ -63,8 +63,9 @@ for (const i of ["chat-list","moment-list","moment-form","moment-input","moment-
   "auth","auth-form","auth-user","auth-pass","auth-err","auth-reg",
   "view-chats","view-class","view-class-topic","view-calls","view-moments","view-me","view-chat","view-call",
   "class-body","class-back","class-topic-body","class-topic-back","class-topic-call","class-topic-kicker",
-  "push-enable","push-note","push-err","profile-err","profile-row","me-avatar",
-  "me-user","avatar-file","logout-row","notif-sheet","notif-sheet-close"]) els.set(i, mkEl(i));
+  "push-enable","push-note","push-err","profile-err","me-avatar",
+  "me-user","avatar-file","logout-row","notif-sheet","notif-sheet-close",
+  "stat-msgs","stat-calls","stat-voice"]) els.set(i, mkEl(i));
 const tabs = [
   Object.assign(mkEl("", "button"), { dataset: { view: "chats" } }),
   Object.assign(mkEl("", "button"), { dataset: { view: "calls" } }),
@@ -77,6 +78,7 @@ globalThis.document = {
   querySelector: (s) => (s === ".tabbar" ? mkEl("", "nav") : mkEl()),
   querySelectorAll: (s) => (s === ".tab" ? tabs : []),
   addEventListener() {},
+  body: mkEl("body"),
   visibilityState: "visible",
 };
 class AC {

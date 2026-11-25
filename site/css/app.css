@@ -1229,6 +1229,137 @@ button { font: inherit; color: inherit; }
   border-radius: 12px;
 }
 
+/* ── Me 页：头像区 + 统一分组卡片（微信 / WhatsApp 式 inset list）── */
+
+/* 头像区：无卡片，直接铺在背景上 */
+.me-profile {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 22px 28px;
+}
+
+.me-avatar { width: 76px; height: 76px; }
+
+.me-profile__id {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.me-profile__id b { font-size: 22px; font-weight: 700; letter-spacing: -0.02em; }
+.me-profile__id i { font-style: normal; font-size: 14px; color: var(--ink-2); }
+
+/* 分组卡片：整页所有块用同一张白卡外观（无边框，靠白卡与奶油底的对比分层） */
+.me-group {
+  margin: 0 14px 34px;
+  background: #fff;
+  border-radius: 18px;
+  box-shadow: 0 1px 2px rgba(62, 54, 46, 0.05);
+  overflow: hidden;
+}
+
+/* 用量三列 */
+.me-stats { display: flex; padding: 20px 0; }
+.me-stat {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+.me-stat + .me-stat { border-left: 0.5px solid var(--hairline); }
+.me-stat b { font-size: 21px; font-weight: 700; letter-spacing: -0.01em; }
+.me-stat i { font-style: normal; font-size: 12px; color: var(--ink-2); }
+
+/* 订阅卡 */
+.me-sub { padding: 18px; }
+.me-sub__top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.me-sub__name { font-size: 16px; font-weight: 650; }
+.me-sub__badge {
+  padding: 2px 9px 3px;
+  border-radius: 999px;
+  background: var(--glow);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+}
+.me-sub__line { margin: 5px 0 14px; font-size: 13px; line-height: 1.5; color: var(--ink-2); }
+.me-quota {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--hairline);
+  overflow: hidden;
+}
+.me-quota__fill {
+  height: 100%;
+  width: 0;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #f2b45a, var(--accent));
+  transition: width 500ms var(--spring);
+}
+.me-sub__cta {
+  margin-top: 14px;
+  width: 100%;
+  padding: 11px;
+  border: 1px solid var(--accent);
+  border-radius: 13px;
+  background: transparent;
+  color: var(--accent);
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.me-sub__cta:active { background: var(--glow); }
+
+/* 设置行：小圆角方图标 + 标题/副标题 + chevron，行间发丝线 */
+.me-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 15px 16px;
+  border: 0;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.me-row:active { background: rgba(62, 54, 46, 0.05); }
+.me-row + .me-row { border-top: 0.5px solid var(--hairline); }
+
+.me-row__icon {
+  width: 30px;
+  height: 30px;
+  flex: none;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  background: var(--accent);
+}
+.me-row__icon--warn { background: #d98a2b; }
+
+.me-row__text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.me-row__text b { font-size: 16px; font-weight: 600; }
+.me-row__text i {
+  font-style: normal;
+  font-size: 13px;
+  color: var(--ink-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.me-row__chev { flex: none; width: 16px; color: var(--ink-3); }
+
 /* ── 朋友圈 ── */
 .moments-bar {
   display: flex;
