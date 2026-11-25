@@ -10,7 +10,7 @@
 <title>FluentChat</title>
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="assets/FluentChat.png">
-<link rel="stylesheet" href="css/app.css?v=20261114-13">
+<link rel="stylesheet" href="css/app.css?v=20261125-7">
 </head>
 <body>
 <div class="app">
@@ -233,6 +233,16 @@
       </div>
     </div>
 
+    <!-- 首条消息后一次性提醒：装主屏 + 开通知，Leo 才找得到你 -->
+    <div class="sheet" id="keep-sheet" hidden>
+      <div class="sheet__card" role="dialog" aria-label="Keep Leo close">
+        <b class="sheet__title">Keep Leo close</b>
+        <p class="keep__note" id="keep-note"></p>
+        <button class="sheet__opt" id="keep-notif" type="button"><b>Turn on notifications</b><i>Lock-screen messages from Leo</i></button>
+        <button class="sheet__ghost" id="keep-close" type="button">Later</button>
+      </div>
+    </div>
+
     <!-- 通话中：盖住整个页面（聊天或 Fiona's Class） -->
     <div class="call" id="call" hidden>
       <span class="avatar call-av" id="call-av"><img src="assets/npc-cat.webp" alt=""></span>
@@ -299,6 +309,6 @@
   </nav>
 
 </div>
-<script type="module" src="js/app.js?v=20261114-13"></script>
+<script type="module" src="js/app.js?v=20261125-8"></script>
 </body>
 </html>

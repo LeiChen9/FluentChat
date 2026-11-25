@@ -1,8 +1,9 @@
-import { initChat } from "./live.js?v=20261114-8";
+import { initChat } from "./live.js?v=20261125-1";
 import { loadContacts } from "./personas.js?v=20261114-5";
 import { initCalls } from "./calls.js?v=20261114-6";
 import { initClass } from "./class.js?v=20261114-8";
 import { initMoments } from "./moments.js?v=20261114-4";
+import { maybeShowIntro } from "./intro.js?v=7";
 // 四个主 tab + 三个子页（聊天 / 通话详情 / 课堂）。
 const VIEWS = ["chats", "class", "class-topic", "calls", "moments", "me", "chat", "call"];
 
@@ -287,7 +288,7 @@ initPullRefresh(document.getElementById("view-chats"), async () => {
   await chat.refresh();
   fetch("/ping", { method: "POST", keepalive: true, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ d: DEV_ID }) }).catch(() => {});
 });
-boot().then(openFromPush);
+boot().then(maybeShowIntro).then(openFromPush);
 setupProfileUI();
 
 // 冷启动点通知：SW 带 ?unit= 打开，等联系人就绪后直接进对话
@@ -436,5 +437,32 @@ navigator.serviceWorker?.addEventListener("message", (e) => {
     if (p) chat.open(p);
   }
 });
+
+// ── 首条消息后一次性提醒：装主屏 + 开通知，Leo 才找得到人 ──
+const keepSheet = document.getElementById("keep-sheet");
+const keepNote = document.getElementById("keep-note");
+const keepClose = document.getElementById("keep-close");
+const keepNotif = document.getElementById("keep-notif");
+if (keepSheet && keepNote && keepClose && keepNotif) {
+  const keepDone = () => {
+    try { localStorage.setItem("fluentchat:keep:v1", "1"); } catch {}
+    keepSheet.hidden = true;
+  };
+  keepClose.addEventListener("click", keepDone);
+  keepNotif.addEventListener("click", () => {
+    keepDone();
+    notifSheet.hidden = false;
+  });
+  window.addEventListener("fc:sent", () => {
+    try { if (localStorage.getItem("fluentchat:keep:v1")) return; } catch {}
+    if (!("Notification" in window) || Notification.permission !== "default") return;
+    const iOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+    const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+    keepNote.textContent = iOS && !standalone
+      ? "Add to Home Screen in Safari's Share menu, then reopen from the icon."
+      : "Add to Home Screen from your browser menu, so Leo can reach you.";
+    keepSheet.hidden = false;
+  }, { once: true });
+}
 
 initPushUI();

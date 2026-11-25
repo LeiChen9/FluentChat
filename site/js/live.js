@@ -383,6 +383,7 @@ export function initChat({ show, back, openCall, openClass }) {
     pendingNodes.set(clientId, node);
     try {
       await postMessage(u, text, clientId, node);
+      window.dispatchEvent(new CustomEvent("fc:sent"));
     } catch (e) {
       node.classList.add("msg--fail");
       setChatState(e.message || "Send failed");
